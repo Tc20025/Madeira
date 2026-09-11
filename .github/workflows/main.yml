@@ -1,11 +1,12 @@
-name: Madeira Build Test
+name: Build Madeira IPA
 
 on:
   workflow_dispatch:
 
 jobs:
-  inspect:
+  build:
     runs-on: macos-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout Madeira
@@ -14,41 +15,73 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Show macOS and Xcode
+      - name: Show Xcode
         run: |
-          sw_vers
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Show repository
+      - name: Check required Madeira files
         run: |
-          echo "=== BUILD DIRECTORIES ==="
-          find build -maxdepth 2 -name build.sh -print
+          echo "=== App files ==="
+          find app -maxdepth 2 -type f | sort
 
           echo
-          echo "=== APP ==="
-          ls -la app
-
-          echo
-          echo "=== SUBMODULES ==="
-          git submodule status
-
-      - name: Check required tools
-        run: |
-          echo "=== TOOLS ==="
-          for tool in git cmake meson ninja autoconf automake pkg-config llvm clang clang++ python3; do
-            printf "%-12s: " "$tool"
-            command -v "$tool" || echo "MISSING"
+          echo "=== Required libraries ==="
+          for f in \
+            app/libdxmt_unix.a \
+            app/Madeira/libwineserver.a \
+            app/Madeira/libntdll_unix.a \
+            app/Madeira/libwin32u_unix.a \
+            app/Madeira/libgnutls.a \
+            app/Madeira/libhogweed.a \
+            app/Madeira/libnettle.a \
+            app/Madeira/libgmp.a \
+            FEX/build-ios/FEXCore/Source/libFEXCore.a \
+            FEX/build-ios/FEXCore/Source/libFEXCore_Base.a \
+            FEX/build-ios/FEXCore/Source/libJemallocLibs.a
+          do
+            if [ -e "$f" ]; then
+              echo "FOUND: $f"
+            else
+              echo "MISSING: $f"
+            fi
           done
 
-      - name: Check Xcode project
+      - name: Try Xcode build
         run: |
-          xcodebuild -list -project app/Madeira.xcodeproj
+          mkdir -p build/DerivedData
 
-      - name: Check disk space
-        run: |
-          df -h
+          xcodebuild \
+            -project app/Madeira.xcodeproj \
+            -scheme Madeira \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
 
-      - name: Check CPU
+      - name: Package IPA
+        if: success()
         run: |
-          sysctl -n hw.ncpu
+          APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "Madeira.app not found!"
+            find build/DerivedData -name "*.app" -print
+            exit 1
+          fi
+
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/Madeira.app
+
+          cd build
+          zip -r Madeira.ipa Payload
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-IPA
+          path: build/Madeira.ipa
