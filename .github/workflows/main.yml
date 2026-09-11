@@ -32,15 +32,26 @@ jobs:
           echo "=== Installing macOS build dependencies ==="
           brew install cmake ninja bison flex pkg-config sevenzip
           
-          echo "=== Installing Wine ==="
-          brew tap gcenx/wine
-          # Removed the invalid --no-quarantine flag and explicitly specified --cask
-          brew install --cask gcenx/wine/wine-crossover
-          
           echo "=== Linking keg-only tools to PATH ==="
           echo 'export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:$PATH"' >> $GITHUB_ENV
           echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib"' >> $GITHUB_ENV
           echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include"' >> $GITHUB_ENV
+
+      - name: Install Wine manually
+        shell: bash
+        run: |
+          set -e
+          echo "=== Downloading Wine from Gcenx Releases ==="
+          curl -L --fail --retry 3 -O https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
+          
+          echo "=== Extracting Wine ==="
+          tar -xf wine-devel-11.16-osx64.tar.xz
+          
+          echo "=== Bypassing Quarantine ==="
+          xattr -rc "Wine Devel.app" || true
+          
+          echo "=== Exporting Wine to PATH ==="
+          echo "export PATH=\"$(pwd)/Wine Devel.app/Contents/Resources/wine/bin:\$PATH\"" >> $GITHUB_ENV
 
       - name: Fetch LLVM MinGW toolchain
         shell: bash
