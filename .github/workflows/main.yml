@@ -48,50 +48,70 @@ jobs:
           done
       - name: Prepare Microsoft VC++ Runtime
         run: |
-          brew install sevenzip
+                 - name: Prepare Microsoft VC++ Runtime
+          run: |
+            brew install sevenzip
 
-          curl -L \
-            -o VC_redist.x64.exe \
-            https://aka.ms/vs/17/release/vc_redist.x64.exe
+            curl -L \
+              -o VC_redist.x64.exe \
+              https://aka.ms/vs/17/release/vc_redist.x64.exe
 
-          rm -rf /tmp/vcredist
-          mkdir -p /tmp/vcredist
-          mkdir -p app/Madeira/x86_64-vcruntime
+            rm -rf /tmp/vcredist
+            mkdir -p /tmp/vcredist
+            mkdir -p app/Madeira/x86_64-vcruntime
 
-          7zz x VC_redist.x64.exe -o/tmp/vcredist
+            echo "=== Inspecting VC++ Redistributable ==="
+            7zz l VC_redist.x64.exe
 
-          7zz x \
-            /tmp/vcredist/.rsrc/1033/CABINET/*.cab \
-            -oapp/Madeira/x86_64-vcruntime
+            echo "=== Extracting embedded contents ==="
+            7zz x VC_redist.x64.exe -o/tmp/vcredist
 
-          echo "=== VC++ runtime files ==="
-          ls -la app/Madeira/x86_64-vcruntime
+            echo "=== Searching for CAB files ==="
+            find /tmp/vcredist -type f -iname "*.cab" -print
 
-          echo "=== Required DLLs ==="
+            CAB=$(find /tmp/vcredist -type f -iname "*.cab" -print -quit)
 
-          required=(
-            concrt140.dll
-            msvcp140.dll
-            msvcp140_1.dll
-            msvcp140_2.dll
-            msvcp140_atomic_wait.dll
-            msvcp140_codecvt_ids.dll
-            vcamp140.dll
-            vccorlib140.dll
-            vcomp140.dll
-            vcruntime140.dll
-            vcruntime140_1.dll
-            vcruntime140_threads.dll
-          )
-
-          for dll in "${required[@]}"; do
-            if [ -f "app/Madeira/x86_64-vcruntime/$dll" ]; then
-              echo "FOUND: $dll"
-            else
-              echo "MISSING: $dll"
+            if [ -z "$CAB" ]; then
+              echo "ERROR: No CAB file found!"
+              echo "Contents of /tmp/vcredist:"
+              find /tmp/vcredist -maxdepth 5 -type f -print
               exit 1
             fi
-          done
+
+            echo "Found CAB:"
+            echo "$CAB"
+
+            echo "=== Extracting VC++ runtime DLLs ==="
+            7zz x "$CAB" -oapp/Madeira/x86_64-vcruntime
+
+            echo "=== VC++ runtime files ==="
+            ls -la app/Madeira/x86_64-vcruntime
+
+            echo "=== Checking required DLLs ==="
+
+            required=(
+              concrt140.dll
+              msvcp140.dll
+              msvcp140_1.dll
+              msvcp140_2.dll
+              msvcp140_atomic_wait.dll
+              msvcp140_codecvt_ids.dll
+              vcamp140.dll
+              vccorlib140.dll
+              vcomp140.dll
+              vcruntime140.dll
+              vcruntime140_1.dll
+              vcruntime140_threads.dll
+            )
+
+            for dll in "${required[@]}"; do
+              if [ -f "app/Madeira/x86_64-vcruntime/$dll" ]; then
+                echo "FOUND: $dll"
+              else
+                echo "MISSING: $dll"
+                exit 1
+              fi
+            done
       - name: Try Xcode build
         run: |
           mkdir -p build/DerivedData
