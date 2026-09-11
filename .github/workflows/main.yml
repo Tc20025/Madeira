@@ -33,8 +33,9 @@ jobs:
           brew install cmake ninja bison flex pkg-config sevenzip
           
           echo "=== Installing Wine ==="
-          # Install Wine to execute cross-compiled Windows binaries
-          brew install --cask wine-stable
+          # Install Wine Crossover from Gcenx's tap to bypass Gatekeeper issues with wine-stable
+          brew tap gcenx/wine
+          brew install --no-quarantine gcenx/wine/wine-crossover
           
           echo "=== Linking keg-only tools to PATH ==="
           echo 'export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:$PATH"' >> $GITHUB_ENV
