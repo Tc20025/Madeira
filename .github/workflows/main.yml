@@ -5,7 +5,6 @@ on:
 
 jobs:
   build:
-    # FIX: Changed to a valid GitHub runner label
     runs-on: macos-15
     timeout-minutes: 360
 
@@ -27,6 +26,20 @@ jobs:
           echo
           echo "=== iPhoneOS SDK ==="
           xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build native dependencies
+        shell: bash
+        run: |
+          set -e
+          
+          echo "=== Compiling native components ==="
+          
+          for script in build/*/build.sh; do
+            if [ -f "$script" ]; then
+              echo "--- Executing $script ---"
+              bash "$script"
+            fi
+          done
 
       - name: Check required Madeira files
         shell: bash
@@ -59,7 +72,6 @@ jobs:
             fi
           done
           
-          # FIX: Fail the job immediately if source libraries are missing
           if [ $MISSING_FILES -eq 1 ]; then
             echo "ERROR: Missing required static libraries."
             exit 1
@@ -85,7 +97,6 @@ jobs:
           echo
           echo "=== Preparing directories ==="
 
-          # FIX: Created a stage1 temp folder for the bootstrapper extraction
           rm -rf /tmp/vcredist_stage1 /tmp/vcredist
           mkdir -p /tmp/vcredist_stage1
           mkdir -p /tmp/vcredist
@@ -101,7 +112,6 @@ jobs:
           echo
           echo "=== Extracting internal CAB files (Stage 2) ==="
           
-          # FIX: Extract the .cab files which actually contain the DLLs
           find /tmp/vcredist_stage1 -type f -name "*.cab" -exec 7zz x "{}" -o/tmp/vcredist -y \;
 
           echo
@@ -128,8 +138,6 @@ jobs:
           )
 
           for dll in "${required[@]}"; do
-            # Note: 7zz extraction of MSI/CAB sometimes prepends keys to filenames
-            # Using *dll* ensures we still match it even if renamed slightly by the MSI File table
             source_file=$(find /tmp/vcredist \
               -type f \
               -iname "*$dll*" \
