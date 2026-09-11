@@ -1,0 +1,54 @@
+name: Madeira Build Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Madeira
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Show macOS and Xcode
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Show repository
+        run: |
+          echo "=== BUILD DIRECTORIES ==="
+          find build -maxdepth 2 -name build.sh -print
+
+          echo
+          echo "=== APP ==="
+          ls -la app
+
+          echo
+          echo "=== SUBMODULES ==="
+          git submodule status
+
+      - name: Check required tools
+        run: |
+          echo "=== TOOLS ==="
+          for tool in git cmake meson ninja autoconf automake pkg-config llvm clang clang++ python3; do
+            printf "%-12s: " "$tool"
+            command -v "$tool" || echo "MISSING"
+          done
+
+      - name: Check Xcode project
+        run: |
+          xcodebuild -list -project app/Madeira.xcodeproj
+
+      - name: Check disk space
+        run: |
+          df -h
+
+      - name: Check CPU
+        run: |
+          sysctl -n hw.ncpu
