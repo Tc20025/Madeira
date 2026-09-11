@@ -27,6 +27,7 @@ jobs:
 
           echo
           echo "=== Required libraries ==="
+
           for f in \
             app/libdxmt_unix.a \
             app/Madeira/libwineserver.a \
@@ -46,74 +47,97 @@ jobs:
               echo "MISSING: $f"
             fi
           done
+
       - name: Prepare Microsoft VC++ Runtime
+        shell: bash
         run: |
-                 - name: Prepare Microsoft VC++ Runtime
-          run: |
-            brew install sevenzip
+          set -e
 
-            curl -L \
-              -o VC_redist.x64.exe \
-              https://aka.ms/vs/17/release/vc_redist.x64.exe
+          echo "=== Installing 7-Zip ==="
+          brew install sevenzip
 
-            rm -rf /tmp/vcredist
-            mkdir -p /tmp/vcredist
-            mkdir -p app/Madeira/x86_64-vcruntime
+          echo "=== Downloading Microsoft VC++ Redistributable ==="
+          curl -L \
+            --fail \
+            --retry 3 \
+            -o VC_redist.x64.exe \
+            https://aka.ms/vs/17/release/vc_redist.x64.exe
 
-            echo "=== Inspecting VC++ Redistributable ==="
-            7zz l VC_redist.x64.exe
+          echo "=== Preparing directories ==="
+          rm -rf /tmp/vcredist
+          mkdir -p /tmp/vcredist
+          mkdir -p app/Madeira/x86_64-vcruntime
 
-            echo "=== Extracting embedded contents ==="
-            7zz x VC_redist.x64.exe -o/tmp/vcredist
+          echo "=== Inspecting Microsoft installer ==="
+          7zz l VC_redist.x64.exe
 
-            echo "=== Searching for CAB files ==="
-            find /tmp/vcredist -type f -iname "*.cab" -print
+          echo "=== Extracting Microsoft installer ==="
+          7zz x VC_redist.x64.exe \
+            -o/tmp/vcredist \
+            -y
 
-            CAB=$(find /tmp/vcredist -type f -iname "*.cab" -print -quit)
+          echo
+          echo "=== Extracted files ==="
+          find /tmp/vcredist -type f -print | sort
 
-            if [ -z "$CAB" ]; then
-              echo "ERROR: No CAB file found!"
-              echo "Contents of /tmp/vcredist:"
-              find /tmp/vcredist -maxdepth 5 -type f -print
+          echo
+          echo "=== Required VC++ runtime DLLs ==="
+
+          required=(
+            concrt140.dll
+            msvcp140.dll
+            msvcp140_1.dll
+            msvcp140_2.dll
+            msvcp140_atomic_wait.dll
+            msvcp140_codecvt_ids.dll
+            vcamp140.dll
+            vccorlib140.dll
+            vcomp140.dll
+            vcruntime140.dll
+            vcruntime140_1.dll
+            vcruntime140_threads.dll
+          )
+
+          for dll in "${required[@]}"; do
+            source_file=$(find /tmp/vcredist \
+              -type f \
+              -iname "$dll" \
+              -print \
+              -quit)
+
+            if [ -n "$source_file" ]; then
+              echo "FOUND: $dll"
+              cp "$source_file" "app/Madeira/x86_64-vcruntime/$dll"
+            else
+              echo "MISSING: $dll"
               exit 1
             fi
+          done
 
-            echo "Found CAB:"
-            echo "$CAB"
+          echo
+          echo "=== Final VC++ runtime directory ==="
+          ls -lah app/Madeira/x86_64-vcruntime
 
-            echo "=== Extracting VC++ runtime DLLs ==="
-            7zz x "$CAB" -oapp/Madeira/x86_64-vcruntime
+          echo
+          echo "=== Final verification ==="
 
-            echo "=== VC++ runtime files ==="
-            ls -la app/Madeira/x86_64-vcruntime
+          for dll in "${required[@]}"; do
+            if [ -f "app/Madeira/x86_64-vcruntime/$dll" ]; then
+              echo "OK: $dll"
+            else
+              echo "ERROR: $dll"
+              exit 1
+            fi
+          done
 
-            echo "=== Checking required DLLs ==="
+          echo
+          echo "Microsoft VC++ runtime preparation completed successfully."
 
-            required=(
-              concrt140.dll
-              msvcp140.dll
-              msvcp140_1.dll
-              msvcp140_2.dll
-              msvcp140_atomic_wait.dll
-              msvcp140_codecvt_ids.dll
-              vcamp140.dll
-              vccorlib140.dll
-              vcomp140.dll
-              vcruntime140.dll
-              vcruntime140_1.dll
-              vcruntime140_threads.dll
-            )
-
-            for dll in "${required[@]}"; do
-              if [ -f "app/Madeira/x86_64-vcruntime/$dll" ]; then
-                echo "FOUND: $dll"
-              else
-                echo "MISSING: $dll"
-                exit 1
-              fi
-            done
       - name: Try Xcode build
+        shell: bash
         run: |
+          set -e
+
           mkdir -p build/DerivedData
 
           xcodebuild \
@@ -129,24 +153,44 @@ jobs:
 
       - name: Package IPA
         if: success()
+        shell: bash
         run: |
+          set -e
+
           APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
 
           if [ ! -d "$APP" ]; then
-            echo "Madeira.app not found!"
+            echo "ERROR: Madeira.app not found!"
+            echo
+            echo "Available applications:"
             find build/DerivedData -name "*.app" -print
             exit 1
           fi
 
+          echo "=== Madeira.app found ==="
+          ls -lah "$APP"
+
+          rm -rf build/Payload
           mkdir -p build/Payload
+
           cp -R "$APP" build/Payload/Madeira.app
 
           cd build
-          zip -r Madeira.ipa Payload
+
+          rm -f Madeira.ipa
+
+          zip -r -q Madeira.ipa Payload
+
+          echo
+          echo "=== IPA created ==="
+          ls -lh Madeira.ipa
 
       - name: Upload IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
+          name: Madeira-IPA
+          path: build/Madeira.ipa
+          if-no-files-found: error
           name: Madeira-IPA
           path: build/Madeira.ipa
