@@ -19,10 +19,8 @@ jobs:
         shell: bash
         run: |
           set -e
-
           echo "=== Xcode ==="
           xcodebuild -version
-
           echo
           echo "=== iPhoneOS SDK ==="
           xcrun --sdk iphoneos --show-sdk-path
@@ -32,8 +30,13 @@ jobs:
         run: |
           set -e
           echo "=== Installing macOS build dependencies ==="
-          # Install standard tools required to build Wine and FEX
           brew install cmake ninja bison flex pkg-config sevenzip
+          
+          echo "=== Linking keg-only tools to PATH ==="
+          # macOS Apple Silicon Homebrew paths for keg-only formulas
+          echo 'export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:$PATH"' >> $GITHUB_ENV
+          echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib"' >> $GITHUB_ENV
+          echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include"' >> $GITHUB_ENV
 
       - name: Fetch LLVM MinGW toolchain
         shell: bash
@@ -44,7 +47,6 @@ jobs:
           mkdir -p toolchains
           cd toolchains
           
-          # Download the exact toolchain version requested by the error log
           curl -L \
             --fail \
             --retry 3 \
@@ -53,11 +55,7 @@ jobs:
             
           echo "=== Extracting LLVM MinGW ==="
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
-          
-          # Clean up the archive to save space
           rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
-          
-          echo "Toolchain ready at: $(pwd)/llvm-mingw-20260421-ucrt-macos-universal"
 
       - name: Build native dependencies
         shell: bash
@@ -69,7 +67,8 @@ jobs:
           for script in build/*/build.sh; do
             if [ -f "$script" ]; then
               echo "--- Executing $script ---"
-              bash "$script"
+              # Added -x to trace exactly which command is failing
+              bash -x "$script"
             fi
           done
 
@@ -116,8 +115,6 @@ jobs:
 
           echo "=== Downloading Microsoft VC++ Redistributable ==="
           
-          # Note: sevenzip is now installed in the 'Install build tools' step above
-
           curl -L \
             --fail \
             --retry 3 \
@@ -126,7 +123,6 @@ jobs:
 
           echo
           echo "=== Preparing directories ==="
-
           rm -rf /tmp/vcredist_stage1 /tmp/vcredist
           mkdir -p /tmp/vcredist_stage1
           mkdir -p /tmp/vcredist
@@ -134,88 +130,39 @@ jobs:
 
           echo
           echo "=== Extracting Microsoft installer (Stage 1) ==="
-
-          7zz x VC_redist.x64.exe \
-            -o/tmp/vcredist_stage1 \
-            -y
+          7zz x VC_redist.x64.exe -o/tmp/vcredist_stage1 -y
 
           echo
           echo "=== Extracting internal CAB files (Stage 2) ==="
-          
           find /tmp/vcredist_stage1 -type f -name "*.cab" -exec 7zz x "{}" -o/tmp/vcredist -y \;
 
           echo
-          echo "=== Extracted files ==="
-
-          find /tmp/vcredist -type f -print | sort
-
-          echo
           echo "=== Required VC++ runtime DLLs ==="
-
           required=(
-            concrt140.dll
-            msvcp140.dll
-            msvcp140_1.dll
-            msvcp140_2.dll
-            msvcp140_atomic_wait.dll
-            msvcp140_codecvt_ids.dll
-            vcamp140.dll
-            vccorlib140.dll
-            vcomp140.dll
-            vcruntime140.dll
-            vcruntime140_1.dll
+            concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll
+            msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vcamp140.dll
+            vccorlib140.dll vcomp140.dll vcruntime140.dll vcruntime140_1.dll
             vcruntime140_threads.dll
           )
 
           for dll in "${required[@]}"; do
-            source_file=$(find /tmp/vcredist \
-              -type f \
-              -iname "*$dll*" \
-              -print \
-              -quit)
-
+            source_file=$(find /tmp/vcredist -type f -iname "*$dll*" -print -quit)
             if [ -n "$source_file" ]; then
-              echo "FOUND: $dll (from $source_file)"
-              cp "$source_file" \
-                "app/Madeira/x86_64-vcruntime/$dll"
+              cp "$source_file" "app/Madeira/x86_64-vcruntime/$dll"
             else
               echo "MISSING: $dll"
               exit 1
             fi
           done
 
-          echo
-          echo "=== Final VC++ runtime directory ==="
-
-          ls -lah app/Madeira/x86_64-vcruntime
-
-          echo
-          echo "=== Final verification ==="
-
-          for dll in "${required[@]}"; do
-            if [ -f "app/Madeira/x86_64-vcruntime/$dll" ]; then
-              echo "OK: $dll"
-            else
-              echo "ERROR: $dll"
-              exit 1
-            fi
-          done
-
-          echo
-          echo "Microsoft VC++ runtime preparation completed successfully."
-
       - name: Try Xcode build
         shell: bash
         run: |
           set -e
-
           echo "=== Preparing DerivedData ==="
-
           mkdir -p build/DerivedData
 
-          echo
           echo "=== Starting Madeira Xcode build ==="
-
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -scheme Madeira \
@@ -232,45 +179,22 @@ jobs:
         shell: bash
         run: |
           set -e
-
           APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
-
-          echo "=== Checking Madeira.app ==="
 
           if [ ! -d "$APP" ]; then
             echo "ERROR: Madeira.app not found!"
-
-            echo
-            echo "Available applications:"
-            find build/DerivedData -name "*.app" -print
-
             exit 1
           fi
 
-          echo "Madeira.app found:"
-          ls -lah "$APP"
-
-          echo
           echo "=== Creating Payload directory ==="
-
           rm -rf build/Payload
           mkdir -p build/Payload
-
           cp -R "$APP" build/Payload/Madeira.app
 
-          echo
           echo "=== Creating IPA ==="
-
           cd build
-
           rm -f Madeira.ipa
-
           zip -r -q Madeira.ipa Payload
-
-          echo
-          echo "=== IPA created successfully ==="
-
-          ls -lh Madeira.ipa
 
       - name: Upload IPA
         if: success()
