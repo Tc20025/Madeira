@@ -16,11 +16,19 @@ jobs:
           fetch-depth: 0
 
       - name: Show Xcode
+        shell: bash
         run: |
+          set -e
+
+          echo "=== Xcode ==="
           xcodebuild -version
+
+          echo
+          echo "=== iPhoneOS SDK ==="
           xcrun --sdk iphoneos --show-sdk-path
 
       - name: Check required Madeira files
+        shell: bash
         run: |
           echo "=== App files ==="
           find app -maxdepth 2 -type f | sort
@@ -56,28 +64,37 @@ jobs:
           echo "=== Installing 7-Zip ==="
           brew install sevenzip
 
+          echo
           echo "=== Downloading Microsoft VC++ Redistributable ==="
+
           curl -L \
             --fail \
             --retry 3 \
             -o VC_redist.x64.exe \
             https://aka.ms/vs/17/release/vc_redist.x64.exe
 
+          echo
           echo "=== Preparing directories ==="
+
           rm -rf /tmp/vcredist
           mkdir -p /tmp/vcredist
           mkdir -p app/Madeira/x86_64-vcruntime
 
+          echo
           echo "=== Inspecting Microsoft installer ==="
+
           7zz l VC_redist.x64.exe
 
+          echo
           echo "=== Extracting Microsoft installer ==="
+
           7zz x VC_redist.x64.exe \
             -o/tmp/vcredist \
             -y
 
           echo
           echo "=== Extracted files ==="
+
           find /tmp/vcredist -type f -print | sort
 
           echo
@@ -107,7 +124,8 @@ jobs:
 
             if [ -n "$source_file" ]; then
               echo "FOUND: $dll"
-              cp "$source_file" "app/Madeira/x86_64-vcruntime/$dll"
+              cp "$source_file" \
+                "app/Madeira/x86_64-vcruntime/$dll"
             else
               echo "MISSING: $dll"
               exit 1
@@ -116,6 +134,7 @@ jobs:
 
           echo
           echo "=== Final VC++ runtime directory ==="
+
           ls -lah app/Madeira/x86_64-vcruntime
 
           echo
@@ -138,7 +157,12 @@ jobs:
         run: |
           set -e
 
+          echo "=== Preparing DerivedData ==="
+
           mkdir -p build/DerivedData
+
+          echo
+          echo "=== Starting Madeira Xcode build ==="
 
           xcodebuild \
             -project app/Madeira.xcodeproj \
@@ -159,21 +183,31 @@ jobs:
 
           APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
 
+          echo "=== Checking Madeira.app ==="
+
           if [ ! -d "$APP" ]; then
             echo "ERROR: Madeira.app not found!"
+
             echo
             echo "Available applications:"
             find build/DerivedData -name "*.app" -print
+
             exit 1
           fi
 
-          echo "=== Madeira.app found ==="
+          echo "Madeira.app found:"
           ls -lah "$APP"
+
+          echo
+          echo "=== Creating Payload directory ==="
 
           rm -rf build/Payload
           mkdir -p build/Payload
 
           cp -R "$APP" build/Payload/Madeira.app
+
+          echo
+          echo "=== Creating IPA ==="
 
           cd build
 
@@ -182,7 +216,8 @@ jobs:
           zip -r -q Madeira.ipa Payload
 
           echo
-          echo "=== IPA created ==="
+          echo "=== IPA created successfully ==="
+
           ls -lh Madeira.ipa
 
       - name: Upload IPA
@@ -192,5 +227,3 @@ jobs:
           name: Madeira-IPA
           path: build/Madeira.ipa
           if-no-files-found: error
-          name: Madeira-IPA
-          path: build/Madeira.ipa
