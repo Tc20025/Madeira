@@ -32,8 +32,11 @@ jobs:
           echo "=== Installing macOS build dependencies ==="
           brew install cmake ninja bison flex pkg-config sevenzip
           
+          echo "=== Installing Wine ==="
+          # Install Wine to execute cross-compiled Windows binaries
+          brew install --cask wine-stable
+          
           echo "=== Linking keg-only tools to PATH ==="
-          # macOS Apple Silicon Homebrew paths for keg-only formulas
           echo 'export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:$PATH"' >> $GITHUB_ENV
           echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib"' >> $GITHUB_ENV
           echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include"' >> $GITHUB_ENV
@@ -59,15 +62,21 @@ jobs:
 
       - name: Build native dependencies
         shell: bash
+        env:
+          # Disable Wine GUI prompts (Mono/Gecko) to prevent the runner from hanging indefinitely
+          WINEDLLOVERRIDES: "mscoree,mshtml="
+          WINEDEBUG: "-all"
         run: |
           set -e
+          
+          echo "=== Initializing Wine Prefix ==="
+          wineboot --init || true
           
           echo "=== Compiling native components ==="
           
           for script in build/*/build.sh; do
             if [ -f "$script" ]; then
               echo "--- Executing $script ---"
-              # Added -x to trace exactly which command is failing
               bash -x "$script"
             fi
           done
