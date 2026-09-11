@@ -5,7 +5,8 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    # FIX: Changed to a valid GitHub runner label
+    runs-on: macos-15
     timeout-minutes: 360
 
     steps:
@@ -35,7 +36,8 @@ jobs:
 
           echo
           echo "=== Required libraries ==="
-
+          
+          MISSING_FILES=0
           for f in \
             app/libdxmt_unix.a \
             app/Madeira/libwineserver.a \
@@ -53,8 +55,15 @@ jobs:
               echo "FOUND: $f"
             else
               echo "MISSING: $f"
+              MISSING_FILES=1
             fi
           done
+          
+          # FIX: Fail the job immediately if source libraries are missing
+          if [ $MISSING_FILES -eq 1 ]; then
+            echo "ERROR: Missing required static libraries."
+            exit 1
+          fi
 
       - name: Prepare Microsoft VC++ Runtime
         shell: bash
@@ -76,21 +85,24 @@ jobs:
           echo
           echo "=== Preparing directories ==="
 
-          rm -rf /tmp/vcredist
+          # FIX: Created a stage1 temp folder for the bootstrapper extraction
+          rm -rf /tmp/vcredist_stage1 /tmp/vcredist
+          mkdir -p /tmp/vcredist_stage1
           mkdir -p /tmp/vcredist
           mkdir -p app/Madeira/x86_64-vcruntime
 
           echo
-          echo "=== Inspecting Microsoft installer ==="
-
-          7zz l VC_redist.x64.exe
-
-          echo
-          echo "=== Extracting Microsoft installer ==="
+          echo "=== Extracting Microsoft installer (Stage 1) ==="
 
           7zz x VC_redist.x64.exe \
-            -o/tmp/vcredist \
+            -o/tmp/vcredist_stage1 \
             -y
+
+          echo
+          echo "=== Extracting internal CAB files (Stage 2) ==="
+          
+          # FIX: Extract the .cab files which actually contain the DLLs
+          find /tmp/vcredist_stage1 -type f -name "*.cab" -exec 7zz x "{}" -o/tmp/vcredist -y \;
 
           echo
           echo "=== Extracted files ==="
@@ -116,14 +128,16 @@ jobs:
           )
 
           for dll in "${required[@]}"; do
+            # Note: 7zz extraction of MSI/CAB sometimes prepends keys to filenames
+            # Using *dll* ensures we still match it even if renamed slightly by the MSI File table
             source_file=$(find /tmp/vcredist \
               -type f \
-              -iname "$dll" \
+              -iname "*$dll*" \
               -print \
               -quit)
 
             if [ -n "$source_file" ]; then
-              echo "FOUND: $dll"
+              echo "FOUND: $dll (from $source_file)"
               cp "$source_file" \
                 "app/Madeira/x86_64-vcruntime/$dll"
             else
