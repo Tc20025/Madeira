@@ -9,145 +9,636 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout Madeira
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
+      # ============================================================
+      # XCODE
+      # ============================================================
+
       - name: Show Xcode
         shell: bash
         run: |
-          set -e
-          echo "=== Xcode ==="
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Xcode"
+          echo "========================================"
+
           xcodebuild -version
+
           echo
-          echo "=== iPhoneOS SDK ==="
+          echo "========================================"
+          echo "iPhoneOS SDK"
+          echo "========================================"
+
           xcrun --sdk iphoneos --show-sdk-path
+
+          echo
+          echo "========================================"
+          echo "Machine"
+          echo "========================================"
+
+          uname -m
+          sysctl -n hw.ncpu
+
+      # ============================================================
+      # BUILD DEPENDENCIES
+      # ============================================================
 
       - name: Install build tools
         shell: bash
         run: |
-          set -e
-          echo "=== Installing macOS build dependencies ==="
-          brew install cmake ninja bison flex pkg-config sevenzip
-          
-          echo "=== Linking keg-only tools to PATH ==="
-          echo 'export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:$PATH"' >> $GITHUB_ENV
-          echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib"' >> $GITHUB_ENV
-          echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include"' >> $GITHUB_ENV
+          set -euxo pipefail
 
-      - name: Install Wine manually
+          echo "========================================"
+          echo "Installing Homebrew dependencies"
+          echo "========================================"
+
+          brew update
+
+          brew install \
+            cmake \
+            ninja \
+            bison \
+            flex \
+            pkg-config \
+            sevenzip \
+            autoconf \
+            automake \
+            libtool \
+            gettext \
+            gnutls \
+            nettle \
+            gmp
+
+          echo
+          echo "========================================"
+          echo "Adding tools to PATH"
+          echo "========================================"
+
+          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/flex/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      # ============================================================
+      # LLVM-MINGW
+      #
+      # IMPORTANT:
+      # This must happen BEFORE configuring Madeira Wine.
+      # ============================================================
+
+      - name: Install LLVM MinGW
         shell: bash
         run: |
-          set -e
-          echo "=== Installing Rosetta 2 (Required for x86_64 Wine on macos-15) ==="
-          sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+          set -euxo pipefail
 
-          echo "=== Downloading Wine from Gcenx Releases ==="
-          curl -L --fail --retry 3 -O https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
-          
-          echo "=== Extracting Wine ==="
-          tar -xf wine-devel-11.16-osx64.tar.xz
-          
-          echo "=== Bypassing Quarantine ==="
-          xattr -rc "Wine Devel.app" || true
-          
-          WINE_BIN="$(pwd)/Wine Devel.app/Contents/Resources/wine/bin"
-          
-          echo "=== Exporting Wine to PATH ==="
-          echo "export PATH=\"$WINE_BIN:\$PATH\"" >> $GITHUB_ENV
-          
-          echo "=== Symlinking Wine to satisfy hardcoded script paths ==="
-          mkdir -p /opt/homebrew/bin
-          ln -sf "$WINE_BIN/wine" /opt/homebrew/bin/wine
-          ln -sf "$WINE_BIN/wine64" /opt/homebrew/bin/wine64
-          ln -sf "$WINE_BIN/wineboot" /opt/homebrew/bin/wineboot
+          echo "========================================"
+          echo "Downloading LLVM MinGW"
+          echo "========================================"
 
-      - name: Fetch LLVM MinGW toolchain
-        shell: bash
-        run: |
-          set -e
-          echo "=== Downloading LLVM MinGW ==="
-          
-          mkdir -p toolchains
-          cd toolchains
-          
+          mkdir -p "$GITHUB_WORKSPACE/toolchains"
+
+          cd "$GITHUB_WORKSPACE/toolchains"
+
           curl -L \
             --fail \
-            --retry 3 \
+            --retry 5 \
+            --retry-delay 3 \
             -O \
             https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
-            
-          echo "=== Extracting LLVM MinGW ==="
+
+          echo
+          echo "========================================"
+          echo "Extracting LLVM MinGW"
+          echo "========================================"
+
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
-          rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+
+          rm -f llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+
+          LLVM_ROOT="$GITHUB_WORKSPACE/toolchains/llvm-mingw-20260421-ucrt-macos-universal"
+          LLVM_BIN="$LLVM_ROOT/bin"
+
+          echo
+          echo "LLVM root:"
+          echo "$LLVM_ROOT"
+
+          echo
+          echo "LLVM bin:"
+          echo "$LLVM_BIN"
+
+          echo
+          echo "========================================"
+          echo "Verifying LLVM MinGW"
+          echo "========================================"
+
+          ls -la "$LLVM_BIN"
+
+          test -x "$LLVM_BIN/clang"
+          test -x "$LLVM_BIN/aarch64-w64-mingw32-clang"
+          test -x "$LLVM_BIN/x86_64-w64-mingw32-clang"
+
+          echo
+          echo "aarch64 compiler:"
+          "$LLVM_BIN/aarch64-w64-mingw32-clang" --version
+
+          echo
+          echo "x86_64 compiler:"
+          "$LLVM_BIN/x86_64-w64-mingw32-clang" --version
+
+          echo
+          echo "clang:"
+          "$LLVM_BIN/clang" --version
+
+          # Make LLVM-MinGW available to ALL later GitHub Actions steps.
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+
+          # Save exact location as environment variable.
+          echo "LLVM_MINGW_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
+          echo "LLVM_MINGW_BIN=$LLVM_BIN" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # VERIFY LLVM-MINGW PATH
+      # ============================================================
+
+      - name: Verify LLVM MinGW PATH
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "PATH"
+          echo "========================================"
+
+          echo "$PATH"
+
+          echo
+          echo "========================================"
+          echo "Compiler discovery"
+          echo "========================================"
+
+          command -v clang
+          command -v aarch64-w64-mingw32-clang
+          command -v x86_64-w64-mingw32-clang
+
+          echo
+          echo "aarch64-w64-mingw32-clang:"
+          which aarch64-w64-mingw32-clang
+
+          echo
+          echo "x86_64-w64-mingw32-clang:"
+          which x86_64-w64-mingw32-clang
+
+          echo
+          echo "========================================"
+          echo "Testing ARM64 Windows target"
+          echo "========================================"
+
+          echo 'int main(void) { return 0; }' > /tmp/test.c
+
+          aarch64-w64-mingw32-clang \
+            /tmp/test.c \
+            -o /tmp/test-aarch64.exe
+
+          file /tmp/test-aarch64.exe
+
+          test -f /tmp/test-aarch64.exe
+
+      # ============================================================
+      # ROSETTA
+      # ============================================================
+
+      - name: Install Rosetta 2
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Installing Rosetta 2"
+          echo "========================================"
+
+          sudo /usr/sbin/softwareupdate \
+            --install-rosetta \
+            --agree-to-license || true
+
+      # ============================================================
+      # EXTERNAL WINE RUNTIME
+      #
+      # This Wine is used to RUN Windows tools such as
+      # hlsl_compile.exe.
+      #
+      # It is NOT the Wine source used to produce winebuild.
+      # ============================================================
+
+      - name: Install Wine runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Downloading Gcenx Wine"
+          echo "========================================"
+
+          cd "$GITHUB_WORKSPACE"
+
+          curl -L \
+            --fail \
+            --retry 5 \
+            --retry-delay 3 \
+            -o wine-devel.tar.xz \
+            https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
+
+          echo
+          echo "========================================"
+          echo "Extracting Wine"
+          echo "========================================"
+
+          tar -xf wine-devel.tar.xz
+
+          rm -f wine-devel.tar.xz
+
+          xattr -rc "Wine Devel.app" || true
+
+          WINE_BIN="$GITHUB_WORKSPACE/Wine Devel.app/Contents/Resources/wine/bin"
+
+          if [ ! -x "$WINE_BIN/wine" ]; then
+            echo "ERROR: Wine executable not found:"
+            echo "$WINE_BIN/wine"
+            exit 1
+          fi
+
+          echo
+          echo "Wine:"
+          "$WINE_BIN/wine" --version || true
+
+          echo
+          echo "========================================"
+          echo "Creating Wine symlinks"
+          echo "========================================"
+
+          sudo mkdir -p /opt/homebrew/bin
+
+          sudo ln -sf \
+            "$WINE_BIN/wine" \
+            /opt/homebrew/bin/wine
+
+          if [ -f "$WINE_BIN/wine64" ]; then
+            sudo ln -sf \
+              "$WINE_BIN/wine64" \
+              /opt/homebrew/bin/wine64
+          fi
+
+          if [ -f "$WINE_BIN/wineboot" ]; then
+            sudo ln -sf \
+              "$WINE_BIN/wineboot" \
+              /opt/homebrew/bin/wineboot
+          fi
+
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+          echo "WINE=/opt/homebrew/bin/wine" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # INITIALIZE WINE
+      # ============================================================
+
+      - name: Initialize Wine
+        shell: bash
+        env:
+          WINEDEBUG: "-all"
+          WINEDLLOVERRIDES: "mscoree,mshtml="
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Initializing Wine prefix"
+          echo "========================================"
+
+          /opt/homebrew/bin/wineboot --init || true
+
+          echo
+          echo "Wine:"
+          /opt/homebrew/bin/wine --version || true
+
+      # ============================================================
+      # BUILD MADEIRA WINE TOOLS
+      #
+      # This is where the previous workflow failed.
+      #
+      # The important parts are:
+      #
+      #   1. LLVM-MinGW is now in PATH.
+      #   2. --with-mingw points directly at LLVM-MinGW clang.
+      #   3. ARM64 + ARM64EC PE architectures are enabled.
+      #
+      # Madeira's d3d11-triangle build expects:
+      #
+      # wine/build-macos/tools/winebuild/winebuild
+      # ============================================================
+
+      - name: Build Madeira Wine tools
+        shell: bash
+        env:
+          PATH: "${{ env.LLVM_MINGW_BIN }}:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+          WINEDLLOVERRIDES: "mscoree,mshtml="
+          WINEDEBUG: "-all"
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Wine source"
+          echo "========================================"
+
+          cd "$GITHUB_WORKSPACE"
+
+          if [ ! -d wine ]; then
+            echo "ERROR: wine submodule is missing"
+            exit 1
+          fi
+
+          if [ ! -f wine/configure ]; then
+            echo "ERROR: wine/configure is missing"
+            exit 1
+          fi
+
+          echo
+          echo "Wine commit:"
+          git -C wine rev-parse HEAD
+
+          echo
+          echo "========================================"
+          echo "Checking PE compilers"
+          echo "========================================"
+
+          command -v aarch64-w64-mingw32-clang
+          command -v x86_64-w64-mingw32-clang
+          command -v clang
+
+          echo
+          aarch64-w64-mingw32-clang --version
+
+          echo
+          x86_64-w64-mingw32-clang --version
+
+          echo
+          echo "========================================"
+          echo "Creating Wine build directory"
+          echo "========================================"
+
+          rm -rf wine/build-macos
+
+          mkdir -p wine/build-macos
+
+          cd wine/build-macos
+
+          echo
+          echo "========================================"
+          echo "Configuring Madeira Wine"
+          echo "========================================"
+
+          ../configure \
+            --with-mingw="${LLVM_MINGW_BIN}/clang" \
+            --enable-archs=arm64ec,aarch64,x86_64 \
+            --enable-win64 \
+            --enable-tools \
+            --disable-tests \
+            --disable-win16 \
+            --without-x \
+            --without-wayland \
+            --without-xinerama \
+            --without-xcursor \
+            --without-xinput \
+            --without-oss \
+            --without-pulse \
+            --without-gstreamer \
+            --without-v4l2 \
+            --without-sane \
+            --without-udev \
+            --without-usb \
+            --without-pcap \
+            --without-pcsclite \
+            --without-cups \
+            --without-dbus \
+            --without-gphoto \
+            --without-krb5 \
+            --without-capi \
+            --without-opengl
+
+          echo
+          echo "========================================"
+          echo "Wine configure completed"
+          echo "========================================"
+
+          echo
+          echo "Checking detected PE architectures:"
+
+          grep -E \
+            '^(PE_ARCHS|aarch64_CC|arm64ec_CC|x86_64_CC)=' \
+            config.status \
+            config.log \
+            Makefile \
+            2>/dev/null || true
+
+          echo
+          echo "========================================"
+          echo "Building winebuild"
+          echo "========================================"
+
+          make \
+            -C tools/winebuild \
+            -j"$(sysctl -n hw.ncpu)"
+
+          cd "$GITHUB_WORKSPACE"
+
+          echo
+          echo "========================================"
+          echo "Checking winebuild"
+          echo "========================================"
+
+          WINEBUILD="$GITHUB_WORKSPACE/wine/build-macos/tools/winebuild/winebuild"
+
+          if [ ! -x "$WINEBUILD" ]; then
+            echo "ERROR: winebuild was not created"
+
+            echo
+            echo "Searching:"
+            find wine/build-macos \
+              -type f \
+              -name "winebuild" \
+              -print || true
+
+            exit 1
+          fi
+
+          echo "SUCCESS:"
+          ls -lh "$WINEBUILD"
+
+          echo
+          file "$WINEBUILD"
+
+      # ============================================================
+      # BUILD NATIVE DEPENDENCIES
+      # ============================================================
 
       - name: Build native dependencies
         shell: bash
         env:
+          PATH: "${{ env.LLVM_MINGW_BIN }}:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
           WINEDLLOVERRIDES: "mscoree,mshtml="
           WINEDEBUG: "-all"
           WINE: "/opt/homebrew/bin/wine"
         run: |
-          set -e
-          
-          echo "=== Initializing Wine Prefix ==="
-          wineboot --init || true
-          
-          echo "=== Compiling native components ==="
-          
-          # Unset global Homebrew flags so they do not corrupt the iOS cross-compilation
-          unset CPPFLAGS
-          unset LDFLAGS
-          
-          # Explicitly list ONLY the required components in the correct order
-          BUILD_ORDER=(
-            "wine"
-            "fex"
-            "dxmt"
-            "dxmt-ios"
-          )
-          
-          for component in "${BUILD_ORDER[@]}"; do
-            script="build/$component/build.sh"
-            if [ -f "$script" ]; then
-              echo "--- Executing $script ---"
-              # Run the script; if it fails, catch it and print the hidden .err logs
-              if ! bash -x "$script"; then
-                echo "::error::Build failed in $component"
-                echo "=== DUMPING .err LOGS FOR $component ==="
-                find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
-                exit 1
-              fi
-            else
-              echo "WARNING: $script not found!"
-            fi
-          done
+          set -euxo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          echo "========================================"
+          echo "Verifying tools"
+          echo "========================================"
+
+          command -v cmake
+          command -v ninja
+          command -v bison
+          command -v flex
+          command -v 7zz
+          command -v wine
+
+          command -v aarch64-w64-mingw32-clang
+          command -v x86_64-w64-mingw32-clang
+
+          echo
+          echo "========================================"
+          echo "Checking winebuild"
+          echo "========================================"
+
+          WINEBUILD="$GITHUB_WORKSPACE/wine/build-macos/tools/winebuild/winebuild"
+
+          if [ ! -x "$WINEBUILD" ]; then
+            echo "ERROR: Missing winebuild:"
+            echo "$WINEBUILD"
+            exit 1
+          fi
+
+          ls -lh "$WINEBUILD"
+
+          echo
+          echo "========================================"
+          echo "Build scripts available"
+          echo "========================================"
+
+          find build \
+            -maxdepth 2 \
+            -name build.sh \
+            -print | sort
+
+          # --------------------------------------------------------
+          # FEX
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "BUILDING FEX"
+          echo "========================================"
+
+          if [ -f build/fex/build.sh ]; then
+            bash -x build/fex/build.sh
+          else
+            echo "ERROR: build/fex/build.sh not found"
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # DXMT
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "BUILDING DXMT"
+          echo "========================================"
+
+          if [ -f build/dxmt/build.sh ]; then
+            bash -x build/dxmt/build.sh
+          elif [ -f build/dxmt-ios/build.sh ]; then
+            bash -x build/dxmt-ios/build.sh
+          else
+            echo "ERROR: DXMT build script not found"
+
+            find build \
+              -maxdepth 2 \
+              -type f \
+              -name build.sh \
+              -print
+
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # D3D11 TRIANGLE
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "BUILDING D3D11 TRIANGLE"
+          echo "========================================"
+
+          if [ ! -f build/d3d11-triangle/build.sh ]; then
+            echo "ERROR: build/d3d11-triangle/build.sh not found"
+            exit 1
+          fi
+
+          bash -x build/d3d11-triangle/build.sh
+
+      # ============================================================
+      # CHECK REQUIRED FILES
+      # ============================================================
 
       - name: Check required Madeira files
         shell: bash
         run: |
-          echo "=== App files ==="
-          find app -maxdepth 2 -type f | sort
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          echo "========================================"
+          echo "Application files"
+          echo "========================================"
+
+          find app \
+            -maxdepth 3 \
+            -type f \
+            -print | sort || true
 
           echo
-          echo "=== Required libraries ==="
-          
+          echo "========================================"
+          echo "Required libraries"
+          echo "========================================"
+
           MISSING_FILES=0
-          for f in \
-            app/libdxmt_unix.a \
-            app/Madeira/libwineserver.a \
-            app/Madeira/libntdll_unix.a \
-            app/Madeira/libwin32u_unix.a \
-            app/Madeira/libgnutls.a \
-            app/Madeira/libhogweed.a \
-            app/Madeira/libnettle.a \
-            app/Madeira/libgmp.a \
-            FEX/build-ios/FEXCore/Source/libFEXCore.a \
-            FEX/build-ios/FEXCore/Source/libFEXCore_Base.a \
-            FEX/build-ios/FEXCore/Source/libJemallocLibs.a
-          do
+
+          required_files=(
+            "app/libdxmt_unix.a"
+            "app/Madeira/libwineserver.a"
+            "app/Madeira/libntdll_unix.a"
+            "app/Madeira/libwin32u_unix.a"
+            "app/Madeira/libgnutls.a"
+            "app/Madeira/libhogweed.a"
+            "app/Madeira/libnettle.a"
+            "app/Madeira/libgmp.a"
+            "FEX/build-ios/FEXCore/Source/libFEXCore.a"
+            "FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
+            "FEX/build-ios/FEXCore/Source/libJemallocLibs.a"
+          )
+
+          for f in "${required_files[@]}"; do
             if [ -e "$f" ]; then
               echo "FOUND: $f"
             else
@@ -155,67 +646,145 @@ jobs:
               MISSING_FILES=1
             fi
           done
-          
-          if [ $MISSING_FILES -eq 1 ]; then
-            echo "ERROR: Missing required static libraries."
+
+          echo
+          echo "========================================"
+          echo "Checking d3d11 triangle"
+          echo "========================================"
+
+          if [ -f build/d3d11-triangle/triangle.exe ]; then
+            echo "FOUND: triangle.exe"
+            file build/d3d11-triangle/triangle.exe
+          fi
+
+          if [ "$MISSING_FILES" -ne 0 ]; then
+            echo
+            echo "ERROR: Required static libraries are missing."
             exit 1
           fi
+
+      # ============================================================
+      # MICROSOFT VC++ RUNTIME
+      # ============================================================
 
       - name: Prepare Microsoft VC++ Runtime
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
 
-          echo "=== Downloading Microsoft VC++ Redistributable ==="
-          
+          cd "$GITHUB_WORKSPACE"
+
+          echo "========================================"
+          echo "Downloading Microsoft VC++ Redistributable"
+          echo "========================================"
+
           curl -L \
             --fail \
-            --retry 3 \
+            --retry 5 \
+            --retry-delay 3 \
             -o VC_redist.x64.exe \
             https://aka.ms/vs/17/release/vc_redist.x64.exe
 
           echo
-          echo "=== Preparing directories ==="
-          rm -rf /tmp/vcredist_stage1 /tmp/vcredist
-          mkdir -p /tmp/vcredist_stage1
-          mkdir -p /tmp/vcredist
-          mkdir -p app/Madeira/x86_64-vcruntime
+          echo "========================================"
+          echo "Preparing directories"
+          echo "========================================"
+
+          rm -rf \
+            /tmp/vcredist_stage1 \
+            /tmp/vcredist
+
+          mkdir -p \
+            /tmp/vcredist_stage1 \
+            /tmp/vcredist \
+            app/Madeira/x86_64-vcruntime
 
           echo
-          echo "=== Extracting Microsoft installer (Stage 1) ==="
-          7zz x VC_redist.x64.exe -o/tmp/vcredist_stage1 -y
+          echo "========================================"
+          echo "Extracting installer"
+          echo "========================================"
+
+          7zz x \
+            VC_redist.x64.exe \
+            -o/tmp/vcredist_stage1 \
+            -y
 
           echo
-          echo "=== Extracting internal CAB files (Stage 2) ==="
-          find /tmp/vcredist_stage1 -type f -name "*.cab" -exec 7zz x "{}" -o/tmp/vcredist -y \;
+          echo "========================================"
+          echo "Extracting CAB files"
+          echo "========================================"
+
+          find /tmp/vcredist_stage1 \
+            -type f \
+            -iname "*.cab" \
+            -exec 7zz x "{}" -o/tmp/vcredist -y \;
 
           echo
-          echo "=== Required VC++ runtime DLLs ==="
+          echo "========================================"
+          echo "Copying VC++ DLLs"
+          echo "========================================"
+
           required=(
-            concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll
-            msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vcamp140.dll
-            vccorlib140.dll vcomp140.dll vcruntime140.dll vcruntime140_1.dll
+            concrt140.dll
+            msvcp140.dll
+            msvcp140_1.dll
+            msvcp140_2.dll
+            msvcp140_atomic_wait.dll
+            msvcp140_codecvt_ids.dll
+            vcamp140.dll
+            vccorlib140.dll
+            vcomp140.dll
+            vcruntime140.dll
+            vcruntime140_1.dll
             vcruntime140_threads.dll
           )
 
           for dll in "${required[@]}"; do
-            source_file=$(find /tmp/vcredist -type f -iname "*$dll*" -print -quit)
+
+            source_file=$(
+              find /tmp/vcredist \
+                -type f \
+                -iname "$dll" \
+                -print \
+                -quit
+            )
+
             if [ -n "$source_file" ]; then
-              cp "$source_file" "app/Madeira/x86_64-vcruntime/$dll"
+              echo "FOUND: $dll"
+
+              cp \
+                "$source_file" \
+                "app/Madeira/x86_64-vcruntime/$dll"
             else
               echo "MISSING: $dll"
               exit 1
             fi
+
           done
 
-      - name: Try Xcode build
+      # ============================================================
+      # XCODE BUILD
+      # ============================================================
+
+      - name: Build Madeira with Xcode
         shell: bash
         run: |
-          set -e
-          echo "=== Preparing DerivedData ==="
+          set -euxo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          echo "========================================"
+          echo "Preparing DerivedData"
+          echo "========================================"
+
+          rm -rf build/DerivedData
           mkdir -p build/DerivedData
 
-          echo "=== Starting Madeira Xcode build ==="
+          echo
+          echo "========================================"
+          echo "Starting Xcode build"
+          echo "========================================"
+
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -scheme Madeira \
@@ -227,27 +796,75 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
+      # ============================================================
+      # PACKAGE IPA
+      # ============================================================
+
       - name: Package IPA
         if: success()
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
           APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
 
+          echo "========================================"
+          echo "Checking Madeira.app"
+          echo "========================================"
+
           if [ ! -d "$APP" ]; then
-            echo "ERROR: Madeira.app not found!"
+            echo "ERROR: Madeira.app not found"
+
+            echo
+            echo "Available products:"
+            find build/DerivedData/Build/Products \
+              -maxdepth 3 \
+              -type d \
+              -print || true
+
             exit 1
           fi
 
-          echo "=== Creating Payload directory ==="
-          rm -rf build/Payload
-          mkdir -p build/Payload
-          cp -R "$APP" build/Payload/Madeira.app
+          echo "FOUND:"
+          du -sh "$APP"
 
-          echo "=== Creating IPA ==="
+          echo
+          echo "========================================"
+          echo "Creating Payload"
+          echo "========================================"
+
+          rm -rf build/Payload
+
+          mkdir -p build/Payload
+
+          cp -R \
+            "$APP" \
+            build/Payload/Madeira.app
+
+          echo
+          echo "========================================"
+          echo "Creating IPA"
+          echo "========================================"
+
           cd build
+
           rm -f Madeira.ipa
-          zip -r -q Madeira.ipa Payload
+
+          zip \
+            -r \
+            -q \
+            Madeira.ipa \
+            Payload
+
+          echo
+          echo "IPA:"
+          ls -lh Madeira.ipa
+
+      # ============================================================
+      # UPLOAD IPA
+      # ============================================================
 
       - name: Upload IPA
         if: success()
