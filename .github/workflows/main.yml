@@ -27,6 +27,38 @@ jobs:
           echo "=== iPhoneOS SDK ==="
           xcrun --sdk iphoneos --show-sdk-path
 
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -e
+          echo "=== Installing macOS build dependencies ==="
+          # Install standard tools required to build Wine and FEX
+          brew install cmake ninja bison flex pkg-config sevenzip
+
+      - name: Fetch LLVM MinGW toolchain
+        shell: bash
+        run: |
+          set -e
+          echo "=== Downloading LLVM MinGW ==="
+          
+          mkdir -p toolchains
+          cd toolchains
+          
+          # Download the exact toolchain version requested by the error log
+          curl -L \
+            --fail \
+            --retry 3 \
+            -O \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+            
+          echo "=== Extracting LLVM MinGW ==="
+          tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          
+          # Clean up the archive to save space
+          rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          
+          echo "Toolchain ready at: $(pwd)/llvm-mingw-20260421-ucrt-macos-universal"
+
       - name: Build native dependencies
         shell: bash
         run: |
@@ -82,11 +114,9 @@ jobs:
         run: |
           set -e
 
-          echo "=== Installing 7-Zip ==="
-          brew install sevenzip
-
-          echo
           echo "=== Downloading Microsoft VC++ Redistributable ==="
+          
+          # Note: sevenzip is now installed in the 'Install build tools' step above
 
           curl -L \
             --fail \
