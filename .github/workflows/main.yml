@@ -41,6 +41,9 @@ jobs:
         shell: bash
         run: |
           set -e
+          echo "=== Installing Rosetta 2 (Required for x86_64 Wine on macos-15) ==="
+          sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+
           echo "=== Downloading Wine from Gcenx Releases ==="
           curl -L --fail --retry 3 -O https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
           
@@ -50,8 +53,16 @@ jobs:
           echo "=== Bypassing Quarantine ==="
           xattr -rc "Wine Devel.app" || true
           
+          WINE_BIN="$(pwd)/Wine Devel.app/Contents/Resources/wine/bin"
+          
           echo "=== Exporting Wine to PATH ==="
-          echo "export PATH=\"$(pwd)/Wine Devel.app/Contents/Resources/wine/bin:\$PATH\"" >> $GITHUB_ENV
+          echo "export PATH=\"$WINE_BIN:\$PATH\"" >> $GITHUB_ENV
+          
+          echo "=== Symlinking Wine to satisfy hardcoded script paths ==="
+          mkdir -p /opt/homebrew/bin
+          ln -sf "$WINE_BIN/wine" /opt/homebrew/bin/wine
+          ln -sf "$WINE_BIN/wine64" /opt/homebrew/bin/wine64
+          ln -sf "$WINE_BIN/wineboot" /opt/homebrew/bin/wineboot
 
       - name: Fetch LLVM MinGW toolchain
         shell: bash
@@ -77,6 +88,7 @@ jobs:
         env:
           WINEDLLOVERRIDES: "mscoree,mshtml="
           WINEDEBUG: "-all"
+          WINE: "/opt/homebrew/bin/wine"
         run: |
           set -e
           
