@@ -97,8 +97,24 @@ jobs:
           
           echo "=== Compiling native components ==="
           
-          for script in build/*/build.sh; do
+          BUILD_ORDER=(
+            "wine"
+            "fex"
+            "dxmt"
+            "d3d11-triangle"
+          )
+          
+          for component in "${BUILD_ORDER[@]}"; do
+            script="build/$component/build.sh"
             if [ -f "$script" ]; then
+              echo "--- Executing $script ---"
+              bash -x "$script"
+            fi
+          done
+          
+          for script in build/*/build.sh; do
+            component=$(basename $(dirname $script))
+            if [[ ! " ${BUILD_ORDER[@]} " =~ " ${component} " ]]; then
               echo "--- Executing $script ---"
               bash -x "$script"
             fi
