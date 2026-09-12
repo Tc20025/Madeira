@@ -23,13 +23,22 @@ jobs:
           echo "CPU: $(sysctl -n machdep.cpu.brand_string)"
           test "$(uname -m)" = "arm64"
 
-      - name: Install build tools & Lock LLVM
+      - name: Install build tools
         shell: bash
         run: |
           set -e
 
           brew update
-          brew install cmake ninja bison flex pkg-config sevenzip llvm@15
+
+          brew install \
+            cmake \
+            ninja \
+            nasm \
+            bison \
+            flex \
+            pkg-config \
+            sevenzip \
+            llvm@15
 
           brew link --force llvm@15
 
@@ -37,38 +46,62 @@ jobs:
           LLVM_PREFIX="$(brew --prefix llvm@15)"
           BISON_PREFIX="$(brew --prefix bison)"
           FLEX_PREFIX="$(brew --prefix flex)"
+          NASM_PREFIX="$(brew --prefix nasm)"
 
-          echo "PATH=$LLVM_PREFIX/bin:$BISON_PREFIX/bin:$FLEX_PREFIX/bin:$BREW_PREFIX/bin:$PATH" >> "$GITHUB_ENV"
+          echo "PATH=$LLVM_PREFIX/bin:$BISON_PREFIX/bin:$FLEX_PREFIX/bin:$NASM_PREFIX/bin:$BREW_PREFIX/bin:$PATH" >> "$GITHUB_ENV"
           echo "LDFLAGS=-L$BISON_PREFIX/lib -L$FLEX_PREFIX/lib -L$LLVM_PREFIX/lib" >> "$GITHUB_ENV"
-          echo "CPPFLAGS=-I$BISON_PREFIX/include -I$FLEX_PREFIX/include -I$LLVM_PREFIX/include -Wno-deprecated-declarations" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I$BISON_PREFIX/include -I$FLEX_PREFIX/include -I$LLVM_PREFIX/include" >> "$GITHUB_ENV"
           echo "CPLUS_INCLUDE_PATH=$LLVM_PREFIX/include" >> "$GITHUB_ENV"
           echo "C_INCLUDE_PATH=$LLVM_PREFIX/include" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$LLVM_PREFIX/lib" >> "$GITHUB_ENV"
           echo "LLVM_CONFIG=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
           echo "CXXFLAGS=-Wno-deprecated-declarations -Wno-error" >> "$GITHUB_ENV"
+          echo "ASM_NASM=$NASM_PREFIX/bin/nasm" >> "$GITHUB_ENV"
+
+          nasm -v
+          cmake --version
+          ninja --version
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -e
+
+          python3 -m pip install --upgrade pip setuptools wheel packaging
+
+          python3 - <<'PY'
+          import packaging
+          import setuptools
+          print("packaging:", packaging.__version__)
+          print("setuptools:", setuptools.__version__)
+          PY
 
       - name: Install Wine manually
         shell: bash
         run: |
           set -e
 
-          sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+          sudo /usr/sbin/softwareupdate \
+            --install-rosetta \
+            --agree-to-license || true
 
           curl -L --fail --retry 3 -O \
             https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
 
           tar -xf wine-devel-11.16-osx64.tar.xz
+
           xattr -rc "Wine Devel.app" || true
 
           WINE_BIN="$(pwd)/Wine Devel.app/Contents/Resources/wine/bin"
+          BREW_BIN="$(brew --prefix)/bin"
 
-          sudo mkdir -p "$(brew --prefix)/bin"
+          sudo mkdir -p "$BREW_BIN"
 
-          sudo ln -sf "$WINE_BIN/wine" "$(brew --prefix)/bin/wine"
-          sudo ln -sf "$WINE_BIN/wine64" "$(brew --prefix)/bin/wine64"
-          sudo ln -sf "$WINE_BIN/wineboot" "$(brew --prefix)/bin/wineboot"
+          sudo ln -sf "$WINE_BIN/wine" "$BREW_BIN/wine"
+          sudo ln -sf "$WINE_BIN/wine64" "$BREW_BIN/wine64"
+          sudo ln -sf "$WINE_BIN/wineboot" "$BREW_BIN/wineboot"
 
-          echo "WINE=$(brew --prefix)/bin/wine" >> "$GITHUB_ENV"
+          echo "WINE=$BREW_BIN/wine" >> "$GITHUB_ENV"
           echo "WINEDLLOVERRIDES=mscoree,mshtml=" >> "$GITHUB_ENV"
           echo "WINEDEBUG=-all" >> "$GITHUB_ENV"
 
@@ -84,9 +117,10 @@ jobs:
             https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
 
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+
           rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
 
-      - name: Fetch missing source dependencies (FreeType)
+      - name: Fetch FreeType
         shell: bash
         run: |
           set -e
@@ -99,7 +133,21 @@ jobs:
               research/freetype
           fi
 
-      - name: Configure FEX for ARM64 macOS
+      - name: Prepare macOS CPU information for FEX
+        shell: bash
+        run: |
+          set -e
+
+          sudo mkdir -p /proc
+
+          if [ ! -e /proc/cpuinfo ]; then
+            sudo sh -c '
+              sysctl -a > /tmp/macos_cpuinfo
+              ln -sf /tmp/macos_cpuinfo /proc/cpuinfo
+            ' || true
+          fi
+
+      - name: Configure FEX
         shell: bash
         run: |
           set -e
@@ -108,11 +156,20 @@ jobs:
 
           rm -rf FEX/build-ios
 
+          cd FEX
+
+          python3 Scripts/aarch64_fit_native.py || true
+
+          cd ..
+
           cmake -S FEX -B FEX/build-ios \
             -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_ASM_NASM_COMPILER="$ASM_NASM" \
+            -DENABLE_JEMALLOC=OFF \
+            -DENABLE_RPMALLOC=OFF
 
-      - name: Verify FEX generated ConfigValues.inl
+      - name: Verify FEX generated files
         shell: bash
         run: |
           set -e
@@ -120,13 +177,15 @@ jobs:
           CONFIG_FILE="FEX/build-ios/FEXCore/Config/ConfigValues.inl"
 
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "::error::FEX failed to generate ConfigValues.inl"
-            find FEX/build-ios -name "ConfigValues.inl" -print
+            echo "::error::ConfigValues.inl was not generated"
+            find FEX/build-ios \
+              -name "ConfigValues.inl" \
+              -print
             exit 1
           fi
 
-          echo "Found:"
-          echo "$CONFIG_FILE"
+          echo "ConfigValues.inl successfully generated:"
+          ls -lh "$CONFIG_FILE"
 
       - name: Build FEXCore
         shell: bash
@@ -137,7 +196,7 @@ jobs:
             --target FEXCore FEXCore_Base JemallocLibs \
             -j"$(sysctl -n hw.ncpu)"
 
-      - name: Generate Metal Shaders (Pre-Build)
+      - name: Generate Metal Shaders
         shell: bash
         run: |
           set -e
@@ -146,10 +205,15 @@ jobs:
 
           mkdir -p build/dxmt-ios/shader-headers
 
-          MSAD_METAL="$(find research/dxmt -name "msad.metal" -print -quit 2>/dev/null || true)"
+          MSAD_METAL="$(
+            find research/dxmt \
+              -name "msad.metal" \
+              -print \
+              -quit 2>/dev/null || true
+          )"
 
           if [ -n "$MSAD_METAL" ]; then
-            echo "Found MSAD shader:"
+            echo "Found:"
             echo "$MSAD_METAL"
 
             xcrun -sdk iphoneos metal \
@@ -296,11 +360,13 @@ jobs:
           )
 
           for dll in "${required[@]}"; do
-            source_file="$(find /tmp/vcredist \
-              -type f \
-              -iname "*$dll*" \
-              -print \
-              -quit)"
+            source_file="$(
+              find /tmp/vcredist \
+                -type f \
+                -iname "*$dll*" \
+                -print \
+                -quit
+            )"
 
             if [ -n "$source_file" ]; then
               cp "$source_file" \
@@ -341,10 +407,12 @@ jobs:
 
           if [ ! -d "$APP" ]; then
             echo "::error::Madeira.app was not produced"
+
             find build/DerivedData \
-              -maxdepth 6 \
+              -maxdepth 8 \
               -name "Madeira.app" \
               -print
+
             exit 1
           fi
 
