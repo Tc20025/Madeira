@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 360
 
     steps:
@@ -15,51 +15,74 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Verify ARM64 runner
+        shell: bash
+        run: |
+          set -e
+          echo "Architecture: $(uname -m)"
+          echo "CPU: $(sysctl -n machdep.cpu.brand_string)"
+          test "$(uname -m)" = "arm64"
+
       - name: Install build tools & Lock LLVM
         shell: bash
         run: |
           set -e
+
+          brew update
           brew install cmake ninja bison flex pkg-config sevenzip llvm@15
-          
-          # Force link LLVM 15 to suppress Homebrew warnings and guarantee toolchain priority
+
           brew link --force llvm@15
-          
-          echo 'export PATH="/opt/homebrew/opt/llvm@15/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"' >> $GITHUB_ENV
-          echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib -L/opt/homebrew/opt/llvm@15/lib"' >> $GITHUB_ENV
-          echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include -I/opt/homebrew/opt/llvm@15/include -Wno-deprecated-declarations"' >> $GITHUB_ENV
-          echo 'export CPLUS_INCLUDE_PATH="/opt/homebrew/opt/llvm@15/include"' >> $GITHUB_ENV
-          echo 'export C_INCLUDE_PATH="/opt/homebrew/opt/llvm@15/include"' >> $GITHUB_ENV
-          echo 'export LIBRARY_PATH="/opt/homebrew/opt/llvm@15/lib"' >> $GITHUB_ENV
-          echo 'export LLVM_CONFIG="/opt/homebrew/opt/llvm@15/bin/llvm-config"' >> $GITHUB_ENV
-          echo 'export CXXFLAGS="-Wno-deprecated-declarations -Wno-error"' >> $GITHUB_ENV
+
+          BREW_PREFIX="$(brew --prefix)"
+          LLVM_PREFIX="$(brew --prefix llvm@15)"
+          BISON_PREFIX="$(brew --prefix bison)"
+          FLEX_PREFIX="$(brew --prefix flex)"
+
+          echo "PATH=$LLVM_PREFIX/bin:$BISON_PREFIX/bin:$FLEX_PREFIX/bin:$BREW_PREFIX/bin:$PATH" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$BISON_PREFIX/lib -L$FLEX_PREFIX/lib -L$LLVM_PREFIX/lib" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I$BISON_PREFIX/include -I$FLEX_PREFIX/include -I$LLVM_PREFIX/include -Wno-deprecated-declarations" >> "$GITHUB_ENV"
+          echo "CPLUS_INCLUDE_PATH=$LLVM_PREFIX/include" >> "$GITHUB_ENV"
+          echo "C_INCLUDE_PATH=$LLVM_PREFIX/include" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$LLVM_PREFIX/lib" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=-Wno-deprecated-declarations -Wno-error" >> "$GITHUB_ENV"
 
       - name: Install Wine manually
         shell: bash
         run: |
           set -e
+
           sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
 
-          curl -L --fail --retry 3 -O https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
+          curl -L --fail --retry 3 -O \
+            https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
+
           tar -xf wine-devel-11.16-osx64.tar.xz
           xattr -rc "Wine Devel.app" || true
-          
+
           WINE_BIN="$(pwd)/Wine Devel.app/Contents/Resources/wine/bin"
-          mkdir -p /opt/homebrew/bin
-          ln -sf "$WINE_BIN/wine" /opt/homebrew/bin/wine
-          ln -sf "$WINE_BIN/wine64" /opt/homebrew/bin/wine64
-          ln -sf "$WINE_BIN/wineboot" /opt/homebrew/bin/wineboot
-          
-          echo "WINE=/opt/homebrew/bin/wine" >> $GITHUB_ENV
-          echo "WINEDLLOVERRIDES=mscoree,mshtml=" >> $GITHUB_ENV
-          echo "WINEDEBUG=-all" >> $GITHUB_ENV
+
+          sudo mkdir -p "$(brew --prefix)/bin"
+
+          sudo ln -sf "$WINE_BIN/wine" "$(brew --prefix)/bin/wine"
+          sudo ln -sf "$WINE_BIN/wine64" "$(brew --prefix)/bin/wine64"
+          sudo ln -sf "$WINE_BIN/wineboot" "$(brew --prefix)/bin/wineboot"
+
+          echo "WINE=$(brew --prefix)/bin/wine" >> "$GITHUB_ENV"
+          echo "WINEDLLOVERRIDES=mscoree,mshtml=" >> "$GITHUB_ENV"
+          echo "WINEDEBUG=-all" >> "$GITHUB_ENV"
 
       - name: Fetch LLVM MinGW toolchain
         shell: bash
         run: |
           set -e
+
           mkdir -p toolchains
           cd toolchains
-          curl -L --fail --retry 3 -O https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+
+          curl -L --fail --retry 3 -O \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
           rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
 
@@ -67,35 +90,95 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "=== Cloning FreeType ==="
+
           mkdir -p research
-          git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git research/freetype
+
+          if [ ! -d research/freetype ]; then
+            git clone --depth 1 \
+              https://gitlab.freedesktop.org/freetype/freetype.git \
+              research/freetype
+          fi
+
+      - name: Configure FEX for ARM64 macOS
+        shell: bash
+        run: |
+          set -e
+
+          echo "=== Configuring FEX ==="
+
+          rm -rf FEX/build-ios
+
+          cmake -S FEX -B FEX/build-ios \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Verify FEX generated ConfigValues.inl
+        shell: bash
+        run: |
+          set -e
+
+          CONFIG_FILE="FEX/build-ios/FEXCore/Config/ConfigValues.inl"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::FEX failed to generate ConfigValues.inl"
+            find FEX/build-ios -name "ConfigValues.inl" -print
+            exit 1
+          fi
+
+          echo "Found:"
+          echo "$CONFIG_FILE"
+
+      - name: Build FEXCore
+        shell: bash
+        run: |
+          set -e
+
+          cmake --build FEX/build-ios \
+            --target FEXCore FEXCore_Base JemallocLibs \
+            -j"$(sysctl -n hw.ncpu)"
 
       - name: Generate Metal Shaders (Pre-Build)
         shell: bash
         run: |
           set -e
+
           echo "=== Pre-generating MSAD Shaders ==="
+
           mkdir -p build/dxmt-ios/shader-headers
-          
-          MSAD_METAL=$(find research/dxmt -name "msad.metal" | head -n 1)
+
+          MSAD_METAL="$(find research/dxmt -name "msad.metal" -print -quit 2>/dev/null || true)"
+
           if [ -n "$MSAD_METAL" ]; then
-            xcrun -sdk iphoneos metal -c "$MSAD_METAL" -o build/dxmt-ios/msad.air
-            xcrun -sdk iphoneos metallib build/dxmt-ios/msad.air -o build/dxmt-ios/air_msad.metallib
+            echo "Found MSAD shader:"
+            echo "$MSAD_METAL"
+
+            xcrun -sdk iphoneos metal \
+              -c "$MSAD_METAL" \
+              -o build/dxmt-ios/msad.air
+
+            xcrun -sdk iphoneos metallib \
+              build/dxmt-ios/msad.air \
+              -o build/dxmt-ios/air_msad.metallib
+
             cd build/dxmt-ios
-            xxd -i air_msad.metallib > shader-headers/air_msad.h
+
+            xxd -i air_msad.metallib \
+              > shader-headers/air_msad.h
+
             cd ../..
+
             echo "Successfully generated air_msad.h"
           else
-            echo "Warning: msad.metal not found. Assuming submodules are handling it."
+            echo "Warning: msad.metal not found."
           fi
 
       - name: Build Required Native Dependencies
         shell: bash
         run: |
           set -e
+
           wineboot --init || true
-          
+
           REQUIRED_COMPONENTS=(
             "gmp"
             "nettle"
@@ -109,14 +192,30 @@ jobs:
             "dxmt"
             "dxmt-ios"
           )
-          
+
           for component in "${REQUIRED_COMPONENTS[@]}"; do
             script="build/$component/build.sh"
+
             if [ -f "$script" ]; then
+              echo ""
+              echo "========================================"
               echo ">>> Building $component <<<"
+              echo "========================================"
+
               if ! bash -x "$script"; then
                 echo "::error::Build failed in $component"
-                find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
+
+                if [ -d "build/$component" ]; then
+                  find "build/$component" \
+                    -name "*.err" \
+                    -type f \
+                    -exec sh -c '
+                      echo ""
+                      echo ">>> $1 <<<"
+                      cat "$1"
+                    ' _ {} \;
+                fi
+
                 exit 1
               fi
             else
@@ -127,7 +226,10 @@ jobs:
       - name: Check required Madeira files
         shell: bash
         run: |
+          set -e
+
           MISSING_FILES=0
+
           for f in \
             app/libdxmt_unix.a \
             app/Madeira/libwineserver.a \
@@ -144,10 +246,12 @@ jobs:
             if [ ! -e "$f" ]; then
               echo "MISSING: $f"
               MISSING_FILES=1
+            else
+              echo "FOUND: $f"
             fi
           done
-          
-          if [ $MISSING_FILES -eq 1 ]; then
+
+          if [ "$MISSING_FILES" -eq 1 ]; then
             exit 1
           fi
 
@@ -155,26 +259,56 @@ jobs:
         shell: bash
         run: |
           set -e
-          curl -L --fail --retry 3 -o VC_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+          curl -L --fail --retry 3 \
+            -o VC_redist.x64.exe \
+            https://aka.ms/vs/17/release/vc_redist.x64.exe
 
           rm -rf /tmp/vcredist_stage1 /tmp/vcredist
-          mkdir -p /tmp/vcredist_stage1 /tmp/vcredist app/Madeira/x86_64-vcruntime
 
-          7zz x VC_redist.x64.exe -o/tmp/vcredist_stage1 -y
-          find /tmp/vcredist_stage1 -type f -name "*.cab" -exec 7zz x "{}" -o/tmp/vcredist -y \;
+          mkdir -p \
+            /tmp/vcredist_stage1 \
+            /tmp/vcredist \
+            app/Madeira/x86_64-vcruntime
+
+          7zz x VC_redist.x64.exe \
+            -o/tmp/vcredist_stage1 \
+            -y
+
+          find /tmp/vcredist_stage1 \
+            -type f \
+            -name "*.cab" \
+            -exec 7zz x "{}" -o/tmp/vcredist -y \;
 
           required=(
-            concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll
-            msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vcamp140.dll
-            vccorlib140.dll vcomp140.dll vcruntime140.dll vcruntime140_1.dll
+            concrt140.dll
+            msvcp140.dll
+            msvcp140_1.dll
+            msvcp140_2.dll
+            msvcp140_atomic_wait.dll
+            msvcp140_codecvt_ids.dll
+            vcamp140.dll
+            vccorlib140.dll
+            vcomp140.dll
+            vcruntime140.dll
+            vcruntime140_1.dll
             vcruntime140_threads.dll
           )
 
           for dll in "${required[@]}"; do
-            source_file=$(find /tmp/vcredist -type f -iname "*$dll*" -print -quit)
+            source_file="$(find /tmp/vcredist \
+              -type f \
+              -iname "*$dll*" \
+              -print \
+              -quit)"
+
             if [ -n "$source_file" ]; then
-              cp "$source_file" "app/Madeira/x86_64-vcruntime/$dll"
+              cp "$source_file" \
+                "app/Madeira/x86_64-vcruntime/$dll"
+
+              echo "Copied $dll"
             else
+              echo "::error::Missing $dll"
               exit 1
             fi
           done
@@ -183,7 +317,9 @@ jobs:
         shell: bash
         run: |
           set -e
+
           mkdir -p build/DerivedData
+
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -scheme Madeira \
@@ -200,13 +336,32 @@ jobs:
         shell: bash
         run: |
           set -e
+
           APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "::error::Madeira.app was not produced"
+            find build/DerivedData \
+              -maxdepth 6 \
+              -name "Madeira.app" \
+              -print
+            exit 1
+          fi
+
           rm -rf build/Payload
+
           mkdir -p build/Payload
+
           cp -R "$APP" build/Payload/Madeira.app
+
           cd build
+
           rm -f Madeira.ipa
+
           zip -r -q Madeira.ipa Payload
+
+          echo "IPA created:"
+          ls -lh Madeira.ipa
 
       - name: Upload IPA
         if: success()
