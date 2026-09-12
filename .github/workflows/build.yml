@@ -64,7 +64,6 @@ jobs:
         run: |
           set -e
           
-          # Target the specific llvm@15 paths instead of the global latest llvm
           export PATH="/opt/homebrew/opt/llvm@15/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"
           export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib -L/opt/homebrew/opt/llvm@15/lib"
           export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include -I/opt/homebrew/opt/llvm@15/include -Wno-deprecated-declarations"
@@ -75,6 +74,26 @@ jobs:
           export CXXFLAGS="-Wno-deprecated-declarations -Wno-error"
           
           wineboot --init || true
+          
+          echo "=== Locating and Compiling Metal Shaders ==="
+          mkdir -p build/dxmt-ios/shader-headers
+          
+          # Dynamically locate the msad.metal file instead of guessing the path
+          MSAD_METAL=$(find research/dxmt -name "msad.metal" | head -n 1)
+          
+          if [ -n "$MSAD_METAL" ]; then
+            echo "Found msad.metal at $MSAD_METAL"
+            xcrun -sdk iphoneos metal -c "$MSAD_METAL" -o build/dxmt-ios/msad.air
+            xcrun -sdk iphoneos metallib build/dxmt-ios/msad.air -o build/dxmt-ios/air_msad.metallib
+            
+            # Switch directories so xxd assigns the correct variable name to the C array
+            cd build/dxmt-ios
+            xxd -i air_msad.metallib > shader-headers/air_msad.h
+            cd ../..
+          else
+            echo "::error::msad.metal not found! The submodule might be missing or incomplete."
+            exit 1
+          fi
           
           BUILD_ORDER=("wine" "fex" "dxmt" "dxmt-ios")
           
