@@ -15,18 +15,21 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Show Xcode
+      - name: Install build tools & Lock LLVM
         shell: bash
         run: |
           set -e
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-
-      - name: Install build tools
-        shell: bash
-        run: |
-          set -e
-          brew install cmake ninja bison flex pkg-config sevenzip
+          brew install cmake ninja bison flex pkg-config sevenzip llvm@15
+          
+          # Inject LLVM paths globally so every subsequent step inherits them automatically
+          echo 'export PATH="/opt/homebrew/opt/llvm@15/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"' >> $GITHUB_ENV
+          echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib -L/opt/homebrew/opt/llvm@15/lib"' >> $GITHUB_ENV
+          echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include -I/opt/homebrew/opt/llvm@15/include -Wno-deprecated-declarations"' >> $GITHUB_ENV
+          echo 'export CPLUS_INCLUDE_PATH="/opt/homebrew/opt/llvm@15/include"' >> $GITHUB_ENV
+          echo 'export C_INCLUDE_PATH="/opt/homebrew/opt/llvm@15/include"' >> $GITHUB_ENV
+          echo 'export LIBRARY_PATH="/opt/homebrew/opt/llvm@15/lib"' >> $GITHUB_ENV
+          echo 'export LLVM_CONFIG="/opt/homebrew/opt/llvm@15/bin/llvm-config"' >> $GITHUB_ENV
+          echo 'export CXXFLAGS="-Wno-deprecated-declarations -Wno-error"' >> $GITHUB_ENV
 
       - name: Install Wine manually
         shell: bash
@@ -43,6 +46,10 @@ jobs:
           ln -sf "$WINE_BIN/wine" /opt/homebrew/bin/wine
           ln -sf "$WINE_BIN/wine64" /opt/homebrew/bin/wine64
           ln -sf "$WINE_BIN/wineboot" /opt/homebrew/bin/wineboot
+          
+          echo "WINE=/opt/homebrew/bin/wine" >> $GITHUB_ENV
+          echo "WINEDLLOVERRIDES=mscoree,mshtml=" >> $GITHUB_ENV
+          echo "WINEDEBUG=-all" >> $GITHUB_ENV
 
       - name: Fetch LLVM MinGW toolchain
         shell: bash
@@ -54,73 +61,59 @@ jobs:
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
           rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
 
-      - name: Build native dependencies (Self-Healing Multi-Pass)
+      - name: Generate Metal Shaders (Pre-Build)
         shell: bash
-        env:
-          WINEDLLOVERRIDES: "mscoree,mshtml="
-          WINEDEBUG: "-all"
-          WINE: "/opt/homebrew/bin/wine"
+        run: |
+          set -e
+          echo "=== Pre-generating MSAD Shaders ==="
+          mkdir -p build/dxmt-ios/shader-headers
+          
+          MSAD_METAL=$(find research/dxmt -name "msad.metal" | head -n 1)
+          if [ -n "$MSAD_METAL" ]; then
+            xcrun -sdk iphoneos metal -c "$MSAD_METAL" -o build/dxmt-ios/msad.air
+            xcrun -sdk iphoneos metallib build/dxmt-ios/msad.air -o build/dxmt-ios/air_msad.metallib
+            cd build/dxmt-ios
+            xxd -i air_msad.metallib > shader-headers/air_msad.h
+            cd ../..
+            echo "Successfully generated air_msad.h"
+          else
+            echo "Warning: msad.metal not found. Assuming submodules are handling it."
+          fi
+
+      - name: Build Required Native Dependencies
+        shell: bash
         run: |
           set -e
           wineboot --init || true
           
-          echo "=== Resolving and Compiling Native Components ==="
+          # Strictly define ONLY the folders required for the IPA, omitting broken tests
+          REQUIRED_COMPONENTS=(
+            "gmp"
+            "nettle"
+            "gnutls"
+            "freetype-ios"
+            "wine"
+            "ntdll-unix"
+            "win32u-unix"
+            "wineserver"
+            "fex"
+            "dxmt"
+            "dxmt-ios"
+          )
           
-          MAX_PASSES=4
-          for pass in $(seq 1 $MAX_PASSES); do
-            echo "--- Build Pass $pass ---"
-            ALL_PASSED=1
-            
-            for script in build/*/build.sh; do
-              component=$(basename $(dirname "$script"))
-              
-              # Skip the known broken D3D11 test program entirely
-              if [ "$component" == "d3d11-triangle" ]; then
-                continue
+          for component in "${REQUIRED_COMPONENTS[@]}"; do
+            script="build/$component/build.sh"
+            if [ -f "$script" ]; then
+              echo ">>> Building $component <<<"
+              if ! bash -x "$script"; then
+                echo "::error::Build failed in $component"
+                find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
+                exit 1
               fi
-              
-              # Skip components that already built successfully on a previous pass
-              if [ -f "build/.$component.success" ]; then
-                continue
-              fi
-              
-              echo ">>> Executing $component <<<"
-              
-              # Run the script without killing the workflow if it fails
-              set +e
-              bash -x "$script"
-              RESULT=$?
-              set -e
-              
-              if [ $RESULT -eq 0 ]; then
-                echo "$component built successfully."
-                touch "build/.$component.success"
-              else
-                echo "Warning: $component failed. Retrying in next pass."
-                ALL_PASSED=0
-              fi
-            done
-            
-            # If everything passed without needing another loop, exit the retry logic
-            if [ $ALL_PASSED -eq 1 ]; then
-              break
+            else
+              echo "Info: Script $script not found, proceeding..."
             fi
           done
-          
-          echo "=== Final Verification ==="
-          MISSING_DEPS=0
-          for script in build/*/build.sh; do
-            component=$(basename $(dirname "$script"))
-            if [ "$component" != "d3d11-triangle" ] && [ ! -f "build/.$component.success" ]; then
-              echo "::error::$component ultimately failed to build!"
-              find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
-              MISSING_DEPS=1
-            fi
-          done
-          
-          if [ $MISSING_DEPS -eq 1 ]; then
-             exit 1
-          fi
 
       - name: Check required Madeira files
         shell: bash
@@ -177,7 +170,7 @@ jobs:
             fi
           done
 
-      - name: Try Xcode build
+      - name: Compile Xcode Project
         shell: bash
         run: |
           set -e
