@@ -1,7 +1,7 @@
 name: Build Madeira IPA
 
 on:
-  workflow_dispatch: # Allows you to manually trigger the build from the Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,32 +11,67 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Pulls critical emulator/Wine dependencies
+          submodules: recursive
 
       - name: Set up Xcode Version
         run: |
           sudo xcode-select -switch /Applications/Xcode.app
           xcodebuild -version
 
-      - name: Build Xcode Workspace
+      - name: Automatically Find and Build Project
         run: |
-          # Changed '-project Madeira.xcodeproj' to '-workspace Madeira.xcworkspace'
-          # Targets the proper configuration structure
-          xcodebuild clean build \
-            -workspace Madeira.xcworkspace \
-            -scheme Madeira \
-            -configuration Release \
-            -sdk iphoneos \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            PROVISIONING_PROFILE=""
+          # Dynamically look for an xcodeproj or xcworkspace
+          WORKSPACE_PATH=$(find . -name "*.xcworkspace" -print -quit)
+          PROJECT_PATH=$(find . -name "*.xcodeproj" -print -quit)
+          
+          if [ -n "$WORKSPACE_PATH" ]; then
+            echo "Found workspace at $WORKSPACE_PATH"
+            # Get the first available build scheme
+            SCHEME=$(xcodebuild -workspace "$WORKSPACE_PATH" -list | sed -n '/Schemes:/,$p' | tail -n +2 | tr -d ' ' | head -n 1)
+            echo "Selected scheme: $SCHEME"
+            
+            xcodebuild clean build \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              PROVISIONING_PROFILE=""
+              
+          elif [ -n "$PROJECT_PATH" ]; then
+            echo "Found project at $PROJECT_PATH"
+            SCHEME=$(xcodebuild -project "$PROJECT_PATH" -list | sed -n '/Schemes:/,$p' | tail -n +2 | tr -d ' ' | head -n 1)
+            echo "Selected scheme: $SCHEME"
+            
+            xcodebuild clean build \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              PROVISIONING_PROFILE=""
+          else
+            echo "Error: No Xcode project or workspace found in the repository."
+            exit 1
+          fi
 
       - name: Package Into IPA File
         run: |
           mkdir -p Payload
-          # Locates the compiled .app file and moves it into the Payload folder
-          cp -r build/Release-iphoneos/Madeira.app Payload/ 2>/dev/null || cp -r ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Release-iphoneos/Madeira.app Payload/
+          # Automatically finds the compiled .app folder wherever Xcode saved it
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/ -name "*.app" -path "*/Release-iphoneos/*" -print -quit 2>/dev/null || find . -name "*.app" -path "*/Release-iphoneos/*" -print -quit)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find compiled .app file."
+            exit 1
+          fi
+          
+          echo "Found compiled app at: $APP_PATH"
+          cp -r "$APP_PATH" Payload/
           zip -r Madeira.ipa Payload
 
       - name: Upload IPA Package as Artifact
