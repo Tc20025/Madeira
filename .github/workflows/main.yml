@@ -104,7 +104,38 @@ jobs:
         run: |
           set -euxo pipefail
 
-          xcodebuild -downloadComponent MetalToolchain
+          echo "Selected Xcode:"
+          xcodebuild -version
+
+          echo
+          echo "Developer directory:"
+          xcode-select -p
+
+          echo
+          echo "Checking Metal compiler..."
+
+          if xcrun --find metal >/dev/null 2>&1; then
+            echo "Metal Toolchain is already installed."
+          else
+            echo "Metal Toolchain is missing."
+            echo "Downloading Metal Toolchain..."
+
+            xcodebuild -downloadComponent metalToolchain
+          fi
+
+          echo
+          echo "Verifying Metal compiler..."
+
+          METAL="$(xcrun --find metal)"
+
+          test -x "$METAL"
+
+          echo "Metal compiler:"
+          echo "$METAL"
+
+          echo
+          echo "Metal version:"
+          xcrun metal -version
 
       # ================================================================
       # 6. LLVM-MINGW
