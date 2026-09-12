@@ -11,19 +11,19 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Automatically pulls FEX, Wine, or DXMT dependencies if included
+          submodules: recursive # Pulls critical emulator/Wine dependencies
 
       - name: Set up Xcode Version
         run: |
           sudo xcode-select -switch /Applications/Xcode.app
           xcodebuild -version
 
-      - name: Build Xcode Project
+      - name: Build Xcode Workspace
         run: |
-          # Cleans and builds the scheme. 
-          # Replace 'Madeira' with the exact scheme name if it differs in the project.
+          # Changed '-project Madeira.xcodeproj' to '-workspace Madeira.xcworkspace'
+          # Targets the proper configuration structure
           xcodebuild clean build \
-            -project Madeira.xcodeproj \
+            -workspace Madeira.xcworkspace \
             -scheme Madeira \
             -configuration Release \
             -sdk iphoneos \
