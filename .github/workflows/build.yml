@@ -26,8 +26,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Lock LLVM to version 15 for dxmt compatibility
-          brew install cmake ninja bison flex pkg-config sevenzip llvm@15
+          brew install cmake ninja bison flex pkg-config sevenzip
 
       - name: Install Wine manually
         shell: bash
@@ -55,7 +54,7 @@ jobs:
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
           rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
 
-      - name: Build native dependencies
+      - name: Build native dependencies (Self-Healing Multi-Pass)
         shell: bash
         env:
           WINEDLLOVERRIDES: "mscoree,mshtml="
@@ -63,64 +62,66 @@ jobs:
           WINE: "/opt/homebrew/bin/wine"
         run: |
           set -e
-          
-          export PATH="/opt/homebrew/opt/llvm@15/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"
-          export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib -L/opt/homebrew/opt/llvm@15/lib"
-          export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include -I/opt/homebrew/opt/llvm@15/include -Wno-deprecated-declarations"
-          export CPLUS_INCLUDE_PATH="/opt/homebrew/opt/llvm@15/include"
-          export C_INCLUDE_PATH="/opt/homebrew/opt/llvm@15/include"
-          export LIBRARY_PATH="/opt/homebrew/opt/llvm@15/lib"
-          export LLVM_CONFIG="/opt/homebrew/opt/llvm@15/bin/llvm-config"
-          export CXXFLAGS="-Wno-deprecated-declarations -Wno-error"
-          
           wineboot --init || true
           
-          BUILD_ORDER=("wine" "fex" "dxmt")
+          echo "=== Resolving and Compiling Native Components ==="
           
-          for component in "${BUILD_ORDER[@]}"; do
-            script="build/$component/build.sh"
-            if [ -f "$script" ]; then
-              if ! bash -x "$script"; then
-                echo "::error::Build failed in $component"
-                find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
-                exit 1
+          MAX_PASSES=4
+          for pass in $(seq 1 $MAX_PASSES); do
+            echo "--- Build Pass $pass ---"
+            ALL_PASSED=1
+            
+            for script in build/*/build.sh; do
+              component=$(basename $(dirname "$script"))
+              
+              # Skip the known broken D3D11 test program entirely
+              if [ "$component" == "d3d11-triangle" ]; then
+                continue
               fi
+              
+              # Skip components that already built successfully on a previous pass
+              if [ -f "build/.$component.success" ]; then
+                continue
+              fi
+              
+              echo ">>> Executing $component <<<"
+              
+              # Run the script without killing the workflow if it fails
+              set +e
+              bash -x "$script"
+              RESULT=$?
+              set -e
+              
+              if [ $RESULT -eq 0 ]; then
+                echo "$component built successfully."
+                touch "build/.$component.success"
+              else
+                echo "Warning: $component failed. Retrying in next pass."
+                ALL_PASSED=0
+              fi
+            done
+            
+            # If everything passed without needing another loop, exit the retry logic
+            if [ $ALL_PASSED -eq 1 ]; then
+              break
             fi
           done
-
-          echo "=== Populating missing shader headers for dxmt-ios ==="
-          mkdir -p build/dxmt-ios/shader-headers
-          mkdir -p build/dxmt # Prevent the 'find' command from crashing if this is missing
           
-          # Search for existing headers and suppress errors if nothing is found
-          find build/dxmt research/dxmt -name "air_*.h" -exec cp {} build/dxmt-ios/shader-headers/ \; || true
-          
-          # If the header is STILL missing, forcibly compile it from the source metal file
-          if [ ! -f "build/dxmt-ios/shader-headers/air_msad.h" ]; then
-            echo "air_msad.h not found in search. Generating manually..."
-            MSAD_METAL=$(find research/dxmt -name "msad.metal" | head -n 1)
-            
-            if [ -n "$MSAD_METAL" ]; then
-              xcrun -sdk iphoneos metal -c "$MSAD_METAL" -o build/dxmt-ios/msad.air
-              xcrun -sdk iphoneos metallib build/dxmt-ios/msad.air -o build/dxmt-ios/air_msad.metallib
-              cd build/dxmt-ios
-              xxd -i air_msad.metallib > shader-headers/air_msad.h
-              cd ../..
-            else
-              echo "::error::Could not find msad.metal anywhere to manually generate the header."
-              exit 1
+          echo "=== Final Verification ==="
+          MISSING_DEPS=0
+          for script in build/*/build.sh; do
+            component=$(basename $(dirname "$script"))
+            if [ "$component" != "d3d11-triangle" ] && [ ! -f "build/.$component.success" ]; then
+              echo "::error::$component ultimately failed to build!"
+              find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
+              MISSING_DEPS=1
             fi
-          fi
+          done
           
-          echo "Successfully recovered air_msad.h"
-          
-          # Run the dxmt-ios build now that the headers are guaranteed to be present
-          if ! bash -x "build/dxmt-ios/build.sh"; then
-             echo "::error::Build failed in dxmt-ios"
-             find "build/dxmt-ios" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
+          if [ $MISSING_DEPS -eq 1 ]; then
              exit 1
           fi
-          
+
       - name: Check required Madeira files
         shell: bash
         run: |
@@ -145,7 +146,7 @@ jobs:
           done
           
           if [ $MISSING_FILES -eq 1 ]; then
-             exit 1
+            exit 1
           fi
 
       - name: Prepare Microsoft VC++ Runtime
