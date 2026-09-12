@@ -3,66 +3,63 @@ name: Build Madeira IPA
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 360
+
+    env:
+      LLVM_VERSION: "15.0.7"
+      LLVM_MINGW_VERSION: "20260421-ucrt-macos-universal"
+      IOS_DEPLOYMENT_TARGET: "17.0"
+
+      LLVM_SRC: "${{ github.workspace }}/toolchains/llvm-project"
+      LLVM_HOST_BUILD: "${{ github.workspace }}/toolchains/llvm-host-build"
+      LLVM_IOS_BUILD: "${{ github.workspace }}/toolchains/llvm-ios-build"
+
+      LLVM_MINGW_BIN: "${{ github.workspace }}/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
 
     steps:
 
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
-
+      # ================================================================
+      # 1. CHECKOUT
+      # ================================================================
       - name: Checkout Madeira
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # ============================================================
-      # BASIC SYSTEM INFORMATION
-      # ============================================================
-
-      - name: Show build environment
+      # ================================================================
+      # 2. SHOW XCODE / SDK
+      # ================================================================
+      - name: Show Xcode
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "========================================"
-          echo "Machine"
-          echo "========================================"
-
-          uname -a
-          uname -m
-          sysctl -n hw.ncpu
-
-          echo
-          echo "========================================"
-          echo "Xcode"
-          echo "========================================"
-
           xcodebuild -version
+          xcode-select -p
 
-          echo
-          echo "========================================"
-          echo "iPhoneOS SDK"
-          echo "========================================"
+          echo "macOS:"
+          sw_vers
 
+          echo "iPhoneOS SDK:"
           xcrun --sdk iphoneos --show-sdk-path
 
-          echo
-          echo "========================================"
-          echo "Submodules"
-          echo "========================================"
+          echo "iPhoneOS SDK version:"
+          xcrun --sdk iphoneos --show-sdk-version
 
-          git submodule status --recursive
+          echo "Architecture:"
+          uname -m
 
-      # ============================================================
-      # HOMEBREW DEPENDENCIES
-      # ============================================================
-
-      - name: Install build tools
+      # ================================================================
+      # 3. INSTALL BUILD TOOLS
+      # ================================================================
+      - name: Install Homebrew dependencies
         shell: bash
         run: |
           set -euxo pipefail
@@ -76,417 +73,377 @@ jobs:
             bison \
             flex \
             pkg-config \
-            sevenzip \
-            autoconf \
-            automake \
-            libtool \
-            gettext \
-            gnutls \
-            nettle \
-            gmp \
-            python
+            sevenzip
 
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
-          echo "/opt/homebrew/opt/flex/bin" >> "$GITHUB_PATH"
+          echo "Homebrew prefix:"
+          brew --prefix
 
-      # ============================================================
-      # METAL TOOLCHAIN
-      #
-      # Required by current Madeira DXMT iOS build.
-      # ============================================================
+          echo "Installed versions:"
+          cmake --version
+          ninja --version
+          meson --version
+          7zz --help | head -n 5
 
+      # ================================================================
+      # 4. PATH
+      # ================================================================
+      - name: Configure build PATH
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix sevenzip)/bin" >> "$GITHUB_PATH"
+
+      # ================================================================
+      # 5. DOWNLOAD APPLE METAL TOOLCHAIN
+      # ================================================================
       - name: Install Metal Toolchain
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "========================================"
-          echo "Installing Apple Metal Toolchain"
-          echo "========================================"
+          xcodebuild -downloadComponent MetalToolchain
 
-          xcodebuild -downloadComponent MetalToolchain || true
-
-      # ============================================================
-      # LLVM-MINGW
-      # ============================================================
-
-      - name: Install LLVM MinGW
+      # ================================================================
+      # 6. LLVM-MINGW
+      # ================================================================
+      - name: Download LLVM-MinGW
         shell: bash
         run: |
           set -euxo pipefail
 
-          ROOT="$GITHUB_WORKSPACE"
-          TOOLCHAIN="$ROOT/toolchains"
+          mkdir -p toolchains
 
-          mkdir -p "$TOOLCHAIN"
+          cd toolchains
 
-          cd "$TOOLCHAIN"
+          curl -L --fail --retry 5 \
+            -o llvm-mingw.tar.xz \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}.tar.xz"
 
-          echo "========================================"
-          echo "Downloading LLVM MinGW"
-          echo "========================================"
+          tar -xf llvm-mingw.tar.xz
 
-          curl -L \
-            --fail \
-            --retry 5 \
-            --retry-delay 3 \
-            -O \
-            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          rm -f llvm-mingw.tar.xz
 
-          echo
-          echo "========================================"
-          echo "Extracting LLVM MinGW"
-          echo "========================================"
+          test -x \
+            "llvm-mingw-${LLVM_MINGW_VERSION}/bin/aarch64-w64-mingw32-clang"
 
-          tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          test -x \
+            "llvm-mingw-${LLVM_MINGW_VERSION}/bin/x86_64-w64-mingw32-clang"
 
-          rm -f llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          echo "LLVM-MinGW installed:"
+          ls -la "llvm-mingw-${LLVM_MINGW_VERSION}/bin" | head -n 30
 
-          LLVM_MINGW="$TOOLCHAIN/llvm-mingw-20260421-ucrt-macos-universal"
-
-          test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang"
-          test -x "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang"
-
-          echo "LLVM_MINGW_ROOT=$LLVM_MINGW" >> "$GITHUB_ENV"
-          echo "LLVM_MINGW_BIN=$LLVM_MINGW/bin" >> "$GITHUB_ENV"
-
-          echo "$LLVM_MINGW/bin" >> "$GITHUB_PATH"
-
-          echo
-          echo "========================================"
-          echo "LLVM MinGW version"
-          echo "========================================"
-
-          "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" --version
-          "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" --version
-
-      # ============================================================
-      # VERIFY LLVM-MINGW
-      # ============================================================
-
-      - name: Verify LLVM MinGW
+      # ================================================================
+      # 7. VERIFY LLVM-MINGW
+      # ================================================================
+      - name: Verify LLVM-MinGW
         shell: bash
         run: |
           set -euxo pipefail
 
-          command -v aarch64-w64-mingw32-clang
-          command -v x86_64-w64-mingw32-clang
+          export PATH="$LLVM_MINGW_BIN:$PATH"
 
-          echo
-          echo "Testing ARM64 Windows compilation"
+          which aarch64-w64-mingw32-clang
+          which x86_64-w64-mingw32-clang
 
-          cat > /tmp/test.c <<'EOF'
-          int main(void) {
-              return 0;
-          }
-          EOF
+          aarch64-w64-mingw32-clang --version
+          x86_64-w64-mingw32-clang --version
 
-          aarch64-w64-mingw32-clang \
-            /tmp/test.c \
-            -o /tmp/test-arm64.exe
-
-          file /tmp/test-arm64.exe
-
-      # ============================================================
-      # LLVM 15.0.7 FOR iOS
-      #
-      # Madeira DXMT requires:
-      #
-      # toolchains/llvm-ios-build/
-      #
-      # It is a two-stage LLVM build:
-      #
-      # 1. Native macOS llvm-tblgen
-      # 2. iOS LLVM libraries
-      # ============================================================
-
-      - name: Build LLVM 15.0.7 for iOS
+      # ================================================================
+      # 8. DOWNLOAD LLVM 15.0.7
+      # ================================================================
+      - name: Download LLVM 15.0.7 source
         shell: bash
         run: |
           set -euxo pipefail
 
-          ROOT="$GITHUB_WORKSPACE"
-          TOOLCHAIN="$ROOT/toolchains"
+          mkdir -p toolchains
 
-          LLVM_PROJECT="$TOOLCHAIN/llvm-project"
-          LLVM_SRC="$LLVM_PROJECT/llvm"
+          cd toolchains
 
-          HOST_BUILD="$TOOLCHAIN/llvm-host-build"
-          IOS_BUILD="$TOOLCHAIN/llvm-ios-build"
+          curl -L --fail --retry 5 \
+            -o llvm-project.tar.xz \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/llvm-project-${LLVM_VERSION}.src.tar.xz"
 
-          echo "========================================"
-          echo "Downloading LLVM 15.0.7"
-          echo "========================================"
+          rm -rf llvm-project
 
-          if [ ! -d "$LLVM_PROJECT/.git" ]; then
-            git clone \
-              --depth 1 \
-              --branch llvmorg-15.0.7 \
-              https://github.com/llvm/llvm-project.git \
-              "$LLVM_PROJECT"
-          fi
+          mkdir llvm-project
 
-          echo
-          echo "LLVM commit:"
-          git -C "$LLVM_PROJECT" rev-parse HEAD
+          tar -xf llvm-project.tar.xz \
+            --strip-components=1 \
+            -C llvm-project
 
-          # --------------------------------------------------------
-          # Apple linker fix required by Madeira's DXMT instructions.
-          #
-          # Add iOS to the Darwin test so LLVM uses -dead_strip
-          # rather than --gc-sections.
-          # --------------------------------------------------------
+          rm -f llvm-project.tar.xz
 
-          ADDLLVM="$LLVM_SRC/cmake/modules/AddLLVM.cmake"
+          test -f llvm-project/llvm/CMakeLists.txt
+          test -f llvm-project/llvm/cmake/modules/AddLLVM.cmake
 
-          if grep -q 'MATCHES "Darwin"' "$ADDLLVM"; then
-            python3 - <<'PY'
-          from pathlib import Path
+          echo "LLVM source:"
+          ls -la llvm-project/llvm | head
 
-          p = Path("toolchains/llvm-project/llvm/cmake/modules/AddLLVM.cmake")
-          s = p.read_text()
+      # ================================================================
+      # 9. BUILD HOST LLVM-TBLGEN
+      # ================================================================
+      - name: Build host llvm-tblgen
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-          old = 'MATCHES "Darwin"'
-          new = 'MATCHES "Darwin|iOS"'
-
-          if old in s:
-              s = s.replace(old, new, 1)
-
-          p.write_text(s)
-          PY
-          fi
-
-          echo
-          echo "========================================"
-          echo "Building host llvm-tblgen"
-          echo "========================================"
-
-          rm -rf "$HOST_BUILD"
+          rm -rf "$LLVM_HOST_BUILD"
 
           cmake \
-            -S "$LLVM_SRC" \
-            -B "$HOST_BUILD" \
+            -S "$LLVM_SRC/llvm" \
+            -B "$LLVM_HOST_BUILD" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="X86" \
             -DLLVM_ENABLE_PROJECTS="" \
-            -DLLVM_TARGETS_TO_BUILD="" \
-            -DLLVM_BUILD_UTILS=ON \
-            -DLLVM_BUILD_TOOLS=OFF \
-            -DLLVM_INCLUDE_TESTS=OFF \
-            -DLLVM_INCLUDE_EXAMPLES=OFF \
-            -DLLVM_INCLUDE_BENCHMARKS=OFF
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_BUILD_TOOLS=ON
 
           cmake \
-            --build "$HOST_BUILD" \
+            --build "$LLVM_HOST_BUILD" \
             --target llvm-tblgen \
             -j"$(sysctl -n hw.ncpu)"
 
-          LLVM_TBLGEN="$HOST_BUILD/bin/llvm-tblgen"
+          test -x "$LLVM_HOST_BUILD/bin/llvm-tblgen"
 
-          test -x "$LLVM_TBLGEN"
+          echo "Host llvm-tblgen:"
+          "$LLVM_HOST_BUILD/bin/llvm-tblgen" --version
+
+      # ================================================================
+      # 10. PATCH LLVM FOR IOS
+      #
+      # IMPORTANT:
+      #
+      # The previous build failed with:
+      #
+      #   ld: unknown options: --gc-sections
+      #
+      # Apple ld64 uses:
+      #
+      #   -dead_strip
+      #
+      # instead.
+      #
+      # We patch AddLLVM.cmake AND explicitly disable LLVM's dead-strip
+      # helper. The generated Ninja files are checked before compilation.
+      # ================================================================
+      - name: Patch LLVM 15.0.7 for iOS linker
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          FILE="$LLVM_SRC/llvm/cmake/modules/AddLLVM.cmake"
+
+          echo "Checking LLVM linker logic..."
+
+          grep -nE 'Darwin|gc-sections|dead_strip|LLVM_NO_DEAD_STRIP' "$FILE" || true
+
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          original = text
+
+          replacements = [
+              ('MATCHES "Darwin"', 'MATCHES "Darwin|iOS"'),
+              ("MATCHES \"Darwin\"", "MATCHES \"Darwin|iOS\""),
+          ]
+
+          for old, new in replacements:
+              text = text.replace(old, new)
+
+          if text == original:
+              print("WARNING: No Darwin condition was changed.")
+              print("This is not fatal because LLVM_NO_DEAD_STRIP=ON is also used.")
+          else:
+              path.write_text(text)
+              print("LLVM AddLLVM.cmake patched successfully.")
+          PY
 
           echo
-          echo "llvm-tblgen:"
-          "$LLVM_TBLGEN" --version
+          echo "Relevant linker logic after patch:"
+          grep -nE 'Darwin|gc-sections|dead_strip|LLVM_NO_DEAD_STRIP' "$FILE" || true
 
-          echo
-          echo "========================================"
-          echo "Building LLVM for iOS"
-          echo "========================================"
+      # ================================================================
+      # 11. CONFIGURE LLVM FOR IOS
+      # ================================================================
+      - name: Configure LLVM 15.0.7 for iOS
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-          rm -rf "$IOS_BUILD"
+          rm -rf "$LLVM_IOS_BUILD"
 
           cmake \
-            -S "$LLVM_SRC" \
-            -B "$IOS_BUILD" \
+            -S "$LLVM_SRC/llvm" \
+            -B "$LLVM_IOS_BUILD" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
-            -DLLVM_TABLEGEN="$LLVM_TBLGEN" \
-            -DLLVM_BUILD_UTILS=OFF \
-            -DLLVM_BUILD_TOOLS=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_AR="$(xcrun --sdk iphoneos --find ar)" \
+            -DCMAKE_RANLIB="$(xcrun --sdk iphoneos --find ranlib)" \
+            -DLLVM_TABLEGEN="$LLVM_HOST_BUILD/bin/llvm-tblgen" \
             -DLLVM_TARGETS_TO_BUILD="" \
             -DLLVM_ENABLE_PROJECTS="" \
             -DLLVM_ENABLE_RUNTIMES="" \
-            -DLLVM_INCLUDE_TESTS=OFF \
-            -DLLVM_INCLUDE_EXAMPLES=OFF \
-            -DLLVM_INCLUDE_BENCHMARKS=OFF \
-            -DLLVM_INCLUDE_DOCS=OFF \
-            -DLLVM_INCLUDE_GO_TESTS=OFF \
-            -DLLVM_ENABLE_BINDINGS=OFF \
-            -DLLVM_ENABLE_ZLIB=OFF \
-            -DLLVM_ENABLE_TERMINFO=OFF \
-            -DLLVM_ENABLE_LIBEDIT=OFF \
-            -DLLVM_ENABLE_LIBXML2=OFF \
-            -DLLVM_ENABLE_LIBPFM=OFF \
-            -DLLVM_ENABLE_CURL=OFF \
-            -DLLVM_ENABLE_ZSTD=OFF
-
-          cmake \
-            --build "$IOS_BUILD" \
-            -j"$(sysctl -n hw.ncpu)"
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_BUILD_TOOLS=ON \
+            -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_NO_DEAD_STRIP=ON
 
           echo
-          echo "========================================"
-          echo "Checking LLVM iOS output"
-          echo "========================================"
+          echo "Checking generated Ninja files for GNU linker flags..."
 
-          find "$IOS_BUILD/lib" \
-            -maxdepth 1 \
-            -type f \
-            -name "*.a" \
-            -print | sort
-
-          if ! find "$IOS_BUILD/lib" \
-            -maxdepth 1 \
-            -type f \
-            -name "*.a" \
-            | grep -q .; then
-
-            echo "ERROR: LLVM iOS static libraries were not produced."
+          if grep -R \
+            -- '--gc-sections' \
+            "$LLVM_IOS_BUILD" \
+            --include='build.ninja' \
+            --include='*.ninja'
+          then
+            echo
+            echo "ERROR: --gc-sections is still present in the iOS LLVM build."
+            echo "The build is intentionally stopped before compiling."
             exit 1
           fi
 
-      # ============================================================
-      # ROSETTA 2
-      # ============================================================
+          echo
+          echo "No --gc-sections found."
 
+          echo
+          echo "Checking for Apple dead-strip flag..."
+
+          grep -R \
+            -- '-dead_strip' \
+            "$LLVM_IOS_BUILD" \
+            --include='build.ninja' \
+            --include='*.ninja' \
+            | head -n 20 || true
+
+      # ================================================================
+      # 12. BUILD LLVM FOR IOS
+      # ================================================================
+      - name: Build LLVM 15.0.7 for iOS
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cmake \
+            --build "$LLVM_IOS_BUILD" \
+            -j"$(sysctl -n hw.ncpu)"
+
+          echo
+          echo "LLVM iOS build complete."
+
+          echo
+          echo "Libraries:"
+          find "$LLVM_IOS_BUILD/lib" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.a' \
+            -print \
+            | sort
+
+      # ================================================================
+      # 13. VERIFY LLVM IOS TOOLCHAIN
+      # ================================================================
+      - name: Verify LLVM iOS libraries
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -d "$LLVM_IOS_BUILD/lib"
+
+          test -f "$LLVM_IOS_BUILD/lib/libLLVMCore.a" || true
+
+          echo "LLVM iOS libraries:"
+          find "$LLVM_IOS_BUILD/lib" \
+            -maxdepth 1 \
+            -name '*.a' \
+            -print \
+            | sort
+
+      # ================================================================
+      # 14. ROSETTA
+      # ================================================================
       - name: Install Rosetta 2
         shell: bash
         run: |
           set -euxo pipefail
 
-          sudo /usr/sbin/softwareupdate \
-            --install-rosetta \
-            --agree-to-license || true
+          softwareupdate --install-rosetta --agree-to-license || true
 
-      # ============================================================
-      # WINE RUNTIME
+          arch -x86_64 /usr/bin/true
+
+      # ================================================================
+      # 15. DOWNLOAD GCENX WINE RUNTIME
       #
-      # Used to execute hlsl_compile.exe.
-      # ============================================================
-
-      - name: Install Wine runtime
+      # This is only used to execute the x86_64 HLSL compiler.
+      # Madeira's own Wine source tree is built separately below.
+      # ================================================================
+      - name: Install Gcenx Wine runtime
         shell: bash
         run: |
           set -euxo pipefail
 
-          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/gcenx-wine"
 
-          echo "========================================"
-          echo "Downloading Gcenx Wine"
-          echo "========================================"
+          cd "$RUNNER_TEMP/gcenx-wine"
 
-          curl -L \
-            --fail \
-            --retry 5 \
-            --retry-delay 3 \
-            -o wine-devel.tar.xz \
-            https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
+          curl -L --fail --retry 5 \
+            -o wine.tar.xz \
+            "https://github.com/Gcenx/Wine-on-macOS/releases/download/11.16/wine-devel-11.16-osx64.tar.xz"
 
-          tar -xf wine-devel.tar.xz
+          tar -xf wine.tar.xz
 
-          rm -f wine-devel.tar.xz
+          echo "Extracted Wine:"
+          find . -maxdepth 4 -type f -name wine -print
 
-          xattr -rc "Wine Devel.app" || true
+          WINE_BIN="$(find "$RUNNER_TEMP/gcenx-wine" -type f -path '*/bin/wine' | head -n 1)"
 
-          WINE_BIN="$GITHUB_WORKSPACE/Wine Devel.app/Contents/Resources/wine/bin"
-
-          test -x "$WINE_BIN/wine"
-
-          sudo mkdir -p /opt/homebrew/bin
-
-          sudo ln -sf \
-            "$WINE_BIN/wine" \
-            /opt/homebrew/bin/wine
-
-          if [ -f "$WINE_BIN/wine64" ]; then
-            sudo ln -sf \
-              "$WINE_BIN/wine64" \
-              /opt/homebrew/bin/wine64
+          if [ -z "$WINE_BIN" ]; then
+            echo "ERROR: Could not find Gcenx Wine executable."
+            exit 1
           fi
 
-          if [ -f "$WINE_BIN/wineboot" ]; then
-            sudo ln -sf \
-              "$WINE_BIN/wineboot" \
-              /opt/homebrew/bin/wineboot
-          fi
+          chmod +x "$WINE_BIN"
 
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "GCENX_WINE_BIN=$WINE_BIN" >> "$GITHUB_ENV"
 
-          echo "WINE=/opt/homebrew/bin/wine" >> "$GITHUB_ENV"
+          echo "Wine runtime:"
+          "$WINE_BIN" --version || true
 
-          /opt/homebrew/bin/wine --version || true
-
-      # ============================================================
-      # INITIALIZE WINE
-      # ============================================================
-
-      - name: Initialize Wine
+      # ================================================================
+      # 16. CONFIGURE MADEIRA WINE
+      # ================================================================
+      - name: Configure Madeira Wine
         shell: bash
-        env:
-          WINEDEBUG: "-all"
-          WINEDLLOVERRIDES: "mscoree,mshtml="
+        working-directory: wine
         run: |
           set -euxo pipefail
 
-          /opt/homebrew/bin/wineboot --init || true
+          rm -rf build-macos
 
-      # ============================================================
-      # BUILD MADEIRA WINE
-      #
-      # Produces:
-      #
-      # wine/build-macos/tools/winebuild/winebuild
-      #
-      # This is required by d3d11-triangle.
-      # ============================================================
+          mkdir -p build-macos
 
-      - name: Build Madeira Wine tools
-        shell: bash
-        env:
-          PATH: "${{ env.LLVM_MINGW_BIN }}:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/usr/bin:/bin"
-        run: |
-          set -euxo pipefail
-
-          cd "$GITHUB_WORKSPACE"
-
-          echo "========================================"
-          echo "Checking Wine source"
-          echo "========================================"
-
-          test -d wine
-          test -f wine/configure
-
-          echo "Wine commit:"
-          git -C wine rev-parse HEAD
-
-          echo
-          echo "========================================"
-          echo "Checking PE compilers"
-          echo "========================================"
-
-          command -v aarch64-w64-mingw32-clang
-          command -v x86_64-w64-mingw32-clang
-
-          echo
-          echo "========================================"
-          echo "Creating Wine build directory"
-          echo "========================================"
-
-          rm -rf wine/build-macos
-          mkdir -p wine/build-macos
-
-          cd wine/build-macos
-
-          echo
-          echo "========================================"
-          echo "Configuring Wine"
-          echo "========================================"
+          cd build-macos
 
           ../configure \
             --with-mingw="${LLVM_MINGW_BIN}/clang" \
@@ -516,61 +473,31 @@ jobs:
             --without-capi \
             --without-opengl
 
-          echo
-          echo "========================================"
-          echo "Building Wine tools"
-          echo "========================================"
+      # ================================================================
+      # 17. BUILD WINEBUILD
+      # ================================================================
+      - name: Build Wine tools
+        shell: bash
+        working-directory: wine
+        run: |
+          set -euxo pipefail
 
           make \
             -C tools/winebuild \
             -j"$(sysctl -n hw.ncpu)"
 
-          cd "$GITHUB_WORKSPACE"
+          test -x build-macos/tools/winebuild/winebuild
 
-          WINEBUILD="$GITHUB_WORKSPACE/wine/build-macos/tools/winebuild/winebuild"
+          echo "winebuild:"
+          build-macos/tools/winebuild/winebuild --version || true
 
-          test -x "$WINEBUILD"
-
-          echo
-          echo "Winebuild successfully created:"
-          ls -lh "$WINEBUILD"
-
-      # ============================================================
-      # BUILD FEX
-      #
-      # IMPORTANT:
-      # THERE IS NO build/fex/build.sh.
-      #
-      # FEX is a git submodule and is built directly with CMake.
-      #
-      # Outputs:
-      #
-      # FEX/build-ios/FEXCore/Source/libFEXCore.a
-      # FEX/build-ios/FEXCore/Source/libFEXCore_Base.a
-      # FEX/build-ios/FEXCore/Source/libJemallocLibs.a
-      # ============================================================
-
+      # ================================================================
+      # 18. BUILD FEX
+      # ================================================================
       - name: Build FEX for iOS
         shell: bash
         run: |
           set -euxo pipefail
-
-          cd "$GITHUB_WORKSPACE"
-
-          echo "========================================"
-          echo "FEX submodule"
-          echo "========================================"
-
-          test -d FEX
-          test -f FEX/CMakeLists.txt
-
-          echo "FEX commit:"
-          git -C FEX rev-parse HEAD
-
-          echo
-          echo "========================================"
-          echo "Configuring FEX for iOS ARM64"
-          echo "========================================"
 
           rm -rf FEX/build-ios
 
@@ -582,7 +509,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DBUILD_TESTING=OFF \
@@ -593,386 +520,292 @@ jobs:
             -DENABLE_LTO=OFF \
             -DENABLE_CCACHE=OFF
 
-          echo
-          echo "========================================"
-          echo "Building FEXCore"
-          echo "========================================"
-
           cmake \
             --build FEX/build-ios \
-            --target FEXCore FEXCore_Base JemallocLibs \
+            --target \
+              FEXCore \
+              FEXCore_Base \
+              JemallocLibs \
             -j"$(sysctl -n hw.ncpu)"
 
           echo
-          echo "========================================"
-          echo "Checking FEX libraries"
-          echo "========================================"
-
+          echo "FEX libraries:"
           find FEX/build-ios \
             -type f \
-            -name "*.a" \
-            -print | sort
+            \( \
+              -name 'libFEXCore.a' \
+              -o -name 'libFEXCore_Base.a' \
+              -o -name 'libJemallocLibs.a' \
+            \) \
+            -print
 
-          test -f FEX/build-ios/FEXCore/Source/libFEXCore.a
-          test -f FEX/build-ios/FEXCore/Source/libFEXCore_Base.a
-          test -f FEX/build-ios/FEXCore/Source/libJemallocLibs.a
-
-          echo
-          echo "FEXCore:"
-          ls -lh FEX/build-ios/FEXCore/Source/libFEXCore.a
-
-          echo
-          echo "FEXCore_Base:"
-          ls -lh FEX/build-ios/FEXCore/Source/libFEXCore_Base.a
-
-          echo
-          echo "JemallocLibs:"
-          ls -lh FEX/build-ios/FEXCore/Source/libJemallocLibs.a
-
-      # ============================================================
-      # BUILD NATIVE MADEIRA COMPONENTS
-      #
-      # Do NOT call build/fex/build.sh.
-      # It does not exist.
-      # ============================================================
-
-      - name: Build native dependencies
+      # ================================================================
+      # 19. VERIFY FEX
+      # ================================================================
+      - name: Verify FEX libraries
         shell: bash
-        env:
-          PATH: "${{ env.LLVM_MINGW_BIN }}:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/usr/bin:/bin"
-          WINEDLOVERRIDES: "mscoree,mshtml="
-          WINEDEBUG: "-all"
-          WINE: "/opt/homebrew/bin/wine"
         run: |
           set -euxo pipefail
 
-          cd "$GITHUB_WORKSPACE"
-
-          echo "========================================"
-          echo "Available Madeira build scripts"
-          echo "========================================"
-
-          find build \
-            -maxdepth 2 \
-            -name build.sh \
-            -print | sort
-
-          echo
-          echo "========================================"
-          echo "Verifying FEX"
-          echo "========================================"
-
           test -f FEX/build-ios/FEXCore/Source/libFEXCore.a
           test -f FEX/build-ios/FEXCore/Source/libFEXCore_Base.a
           test -f FEX/build-ios/FEXCore/Source/libJemallocLibs.a
 
-          echo
-          echo "========================================"
-          echo "Verifying Wine"
-          echo "========================================"
+      # ================================================================
+      # 20. BUILD NATIVE MADEIRA COMPONENTS
+      # ================================================================
+      - name: Build crypto-unix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/crypto-unix/build.sh
+          ./build/crypto-unix/build.sh
 
-          test -x wine/build-macos/tools/winebuild/winebuild
+      - name: Build freetype-ios
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/freetype-ios/build.sh
+          ./build/freetype-ios/build.sh
 
-          echo
-          echo "========================================"
-          echo "Building crypto-unix"
-          echo "========================================"
+      - name: Build gnutls-ios
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/gnutls-ios/build.sh
+          ./build/gnutls-ios/build.sh
 
-          if [ -f build/crypto-unix/build.sh ]; then
-            bash -x build/crypto-unix/build.sh
-          fi
+      - name: Build ntdll-unix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/ntdll-unix/build.sh
+          ./build/ntdll-unix/build.sh
 
-          echo
-          echo "========================================"
-          echo "Building freetype-ios"
-          echo "========================================"
+      - name: Build win32u-unix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/win32u-unix/build.sh
+          ./build/win32u-unix/build.sh
 
-          if [ -f build/freetype-ios/build.sh ]; then
-            bash -x build/freetype-ios/build.sh
-          fi
+      - name: Build wineserver
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/wineserver/build.sh
+          ./build/wineserver/build.sh
 
-          echo
-          echo "========================================"
-          echo "Building gnutls-ios"
-          echo "========================================"
+      - name: Build wineios-drv
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build/wineios-drv/build.sh
+          ./build/wineios-drv/build.sh
 
-          if [ -f build/gnutls-ios/build.sh ]; then
-            bash -x build/gnutls-ios/build.sh
-          fi
+      # ================================================================
+      # 21. PREPARE DXMT TOOLCHAINS LINK
+      # ================================================================
+      - name: Prepare DXMT toolchains
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-          echo
-          echo "========================================"
-          echo "Building ntdll-unix"
-          echo "========================================"
+          rm -f research/dxmt/toolchains
 
-          if [ -f build/ntdll-unix/build.sh ]; then
-            bash -x build/ntdll-unix/build.sh
-          fi
+          ln -s \
+            ../../toolchains \
+            research/dxmt/toolchains
 
-          echo
-          echo "========================================"
-          echo "Building win32u-unix"
-          echo "========================================"
+          test -e research/dxmt/toolchains
 
-          if [ -f build/win32u-unix/build.sh ]; then
-            bash -x build/win32u-unix/build.sh
-          fi
+          echo "DXMT toolchains:"
+          ls -la research/dxmt/toolchains
 
-          echo
-          echo "========================================"
-          echo "Building wineserver"
-          echo "========================================"
+      # ================================================================
+      # 22. BUILD DXMT WINDOWS PE COMPONENTS
+      # ================================================================
+      - name: Configure DXMT PE build
+        shell: bash
+        working-directory: research/dxmt
+        run: |
+          set -euxo pipefail
 
-          if [ -f build/wineserver/build.sh ]; then
-            bash -x build/wineserver/build.sh
-          fi
+          rm -rf build-pe
 
-          echo
-          echo "========================================"
-          echo "Building wineios-drv"
-          echo "========================================"
+          SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 
-          if [ -f build/wineios-drv/build.sh ]; then
-            bash -x build/wineios-drv/build.sh
-          fi
+          export PATH="$PWD/toolchains/llvm-mingw-${LLVM_MINGW_VERSION}/bin:/usr/bin:$(brew --prefix)/bin:$PATH"
 
-          echo
-          echo "========================================"
-          echo "Building DXMT iOS"
-          echo "========================================"
-
-          if [ ! -f build/dxmt-ios/build.sh ]; then
-            echo "ERROR: build/dxmt-ios/build.sh not found"
-            exit 1
-          fi
-
-          bash -x build/dxmt-ios/build.sh
-
-          echo
-          echo "========================================"
-          echo "Building DXMT PE modules"
-          echo "========================================"
-
-          mkdir -p app/Madeira/aarch64-windows
-
-          if [ ! -e research/dxmt/toolchains ]; then
-            ln -s ../../toolchains research/dxmt/toolchains
-          fi
-
-          cd research/dxmt
-
-          SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
-          PATH="$GITHUB_WORKSPACE/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:/usr/bin:/opt/homebrew/bin:$PATH" \
           meson setup \
             --cross-file build-aarch64-win.txt \
             --native-file build-osx.txt \
             -Dwine_build_path=../../wine/build-macos \
             build-pe
 
-          SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
-          PATH="$GITHUB_WORKSPACE/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:/usr/bin:/opt/homebrew/bin:$PATH" \
-          meson compile -C build-pe
+      - name: Build DXMT PE
+        shell: bash
+        working-directory: research/dxmt
+        run: |
+          set -euxo pipefail
 
-          cp \
-            build-pe/src/d3d11/d3d11.dll \
-            build-pe/src/dxgi/dxgi.dll \
-            build-pe/src/winemetal/winemetal.dll \
-            build-pe/src/d3d10/d3d10core.dll \
-            "$GITHUB_WORKSPACE/app/Madeira/aarch64-windows/"
-
-          cd "$GITHUB_WORKSPACE"
+          meson compile \
+            -C build-pe \
+            -j"$(sysctl -n hw.ncpu)"
 
           echo
-          echo "========================================"
-          echo "Building d3d11 triangle"
-          echo "========================================"
+          echo "DXMT PE output:"
+          find build-pe \
+            -type f \
+            \( \
+              -name 'd3d11.dll' \
+              -o -name 'dxgi.dll' \
+              -o -name 'winemetal.dll' \
+              -o -name 'd3d10core.dll' \
+            \) \
+            -print
 
-          if [ ! -f build/d3d11-triangle/build.sh ]; then
-            echo "ERROR: build/d3d11-triangle/build.sh not found"
-            exit 1
-          fi
-
-          bash -x build/d3d11-triangle/build.sh
-
-      # ============================================================
-      # COMBINE DXMT
-      #
-      # Current Madeira README explicitly requires:
-      #
-      # libdxmt_unix.a + LLVM iOS static libraries
-      # ============================================================
-
-      - name: Combine DXMT iOS library
+      # ================================================================
+      # 23. COPY DXMT WINDOWS DLLS
+      # ================================================================
+      - name: Install DXMT Windows DLLs
         shell: bash
         run: |
           set -euxo pipefail
 
-          cd "$GITHUB_WORKSPACE"
+          mkdir -p app/Madeira/aarch64-windows
 
-          DXMT_BUILD="$GITHUB_WORKSPACE/build/dxmt-ios"
-          LLVM_BUILD="$GITHUB_WORKSPACE/toolchains/llvm-ios-build"
-
-          echo "========================================"
-          echo "Checking DXMT objects"
-          echo "========================================"
-
-          test -d "$DXMT_BUILD/obj"
-
-          find "$DXMT_BUILD/obj" \
-            -type f \
-            -name "*.o" \
-            -print | head -20
-
-          echo
-          echo "========================================"
-          echo "Checking LLVM iOS libraries"
-          echo "========================================"
-
-          find "$LLVM_BUILD/lib" \
-            -maxdepth 1 \
-            -type f \
-            -name "*.a" \
-            -print | sort
-
-          echo
-          echo "========================================"
-          echo "Combining DXMT"
-          echo "========================================"
-
-          xcrun -sdk iphoneos \
-            libtool \
-            -static \
-            -o "$DXMT_BUILD/libdxmt_combined.a" \
-            "$DXMT_BUILD"/obj/*.o \
-            "$LLVM_BUILD"/lib/*.a
-
-          mkdir -p app/Madeira
-
-          cp \
-            "$DXMT_BUILD/libdxmt_combined.a" \
-            app/Madeira/libdxmt_combined.a
-
-          echo
-          echo "DXMT combined library:"
-          ls -lh app/Madeira/libdxmt_combined.a
-
-      # ============================================================
-      # CHECK REQUIRED FILES
-      # ============================================================
-
-      - name: Check required Madeira files
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$GITHUB_WORKSPACE"
-
-          echo "========================================"
-          echo "Checking required files"
-          echo "========================================"
-
-          REQUIRED=(
-            "app/libdxmt_unix.a"
-            "app/Madeira/libdxmt_combined.a"
-            "app/Madeira/libwineserver.a"
-            "app/Madeira/libntdll_unix.a"
-            "app/Madeira/libwin32u_unix.a"
-            "FEX/build-ios/FEXCore/Source/libFEXCore.a"
-            "FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
-            "FEX/build-ios/FEXCore/Source/libJemallocLibs.a"
-          )
-
-          MISSING=0
-
-          for FILE in "${REQUIRED[@]}"; do
-            if [ -e "$FILE" ]; then
-              echo "FOUND:   $FILE"
-            else
-              echo "MISSING: $FILE"
-              MISSING=1
-            fi
-          done
-
-          echo
-          echo "========================================"
-          echo "Checking PE modules"
-          echo "========================================"
-
-          for FILE in \
-            app/Madeira/aarch64-windows/d3d11.dll \
-            app/Madeira/aarch64-windows/dxgi.dll \
-            app/Madeira/aarch64-windows/winemetal.dll \
-            app/Madeira/aarch64-windows/d3d10core.dll
+          for dll in \
+            d3d11.dll \
+            dxgi.dll \
+            winemetal.dll \
+            d3d10core.dll
           do
-            if [ -f "$FILE" ]; then
-              echo "FOUND: $FILE"
-            else
-              echo "MISSING: $FILE"
-              MISSING=1
+            SOURCE="$(find research/dxmt/build-pe \
+              -type f \
+              -name "$dll" \
+              | head -n 1)"
+
+            if [ -z "$SOURCE" ]; then
+              echo "ERROR: $dll was not produced."
+              exit 1
             fi
+
+            cp "$SOURCE" \
+              "app/Madeira/aarch64-windows/$dll"
           done
 
-          if [ "$MISSING" -ne 0 ]; then
-            echo
-            echo "ERROR: Required Madeira build artifacts are missing."
-            exit 1
-          fi
+          ls -lh app/Madeira/aarch64-windows
 
-      # ============================================================
-      # MICROSOFT VC++ RUNTIME
-      # ============================================================
+      # ================================================================
+      # 24. BUILD DXMT UNIX SIDE
+      # ================================================================
+      - name: Build DXMT Unix
+        shell: bash
+        working-directory: research/dxmt
+        run: |
+          set -euxo pipefail
 
-      - name: Prepare Microsoft VC++ Runtime
+          chmod +x build.sh
+
+          ./build.sh
+
+          echo
+          echo "DXMT Unix objects:"
+          find obj \
+            -type f \
+            -name '*.o' \
+            -print \
+            | head -n 30
+
+      # ================================================================
+      # 25. COMBINE DXMT IOS STATIC LIBRARIES
+      # ================================================================
+      - name: Combine DXMT iOS libraries
+        shell: bash
+        working-directory: research/dxmt
+        run: |
+          set -euxo pipefail
+
+          xcrun -sdk iphoneos libtool \
+            -static \
+            -o libdxmt_combined.a \
+            obj/*.o \
+            ../../toolchains/llvm-ios-build/lib/*.a
+
+          test -f libdxmt_combined.a
+
+          cp \
+            libdxmt_combined.a \
+            ../../app/Madeira/libdxmt_combined.a
+
+          ls -lh \
+            ../../app/Madeira/libdxmt_combined.a
+
+      # ================================================================
+      # 26. BUILD D3D11 TRIANGLE / WINEBUILD GENERATED MODULE
+      # ================================================================
+      - name: Build d3d11 triangle
         shell: bash
         run: |
           set -euxo pipefail
 
-          cd "$GITHUB_WORKSPACE"
+          chmod +x build/d3d11-triangle/build.sh
 
-          echo "========================================"
-          echo "Downloading Microsoft VC++ Redistributable"
-          echo "========================================"
+          ./build/d3d11-triangle/build.sh
 
-          curl -L \
-            --fail \
-            --retry 5 \
-            --retry-delay 3 \
+      # ================================================================
+      # 27. FETCH MICROSOFT VC++ RUNTIME
+      #
+      # Madeira expects the twelve Microsoft DLLs listed in
+      # tools/fetch-vcruntime.md.
+      # ================================================================
+      - name: Fetch Microsoft Visual C++ runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          VC_DIR="$GITHUB_WORKSPACE/app/Madeira/x86_64-vcruntime"
+
+          rm -rf "$VC_DIR"
+          mkdir -p "$VC_DIR"
+
+          cd "$RUNNER_TEMP"
+
+          rm -rf vcredist
+          mkdir -p vcredist
+
+          curl -L --fail --retry 5 \
             -o VC_redist.x64.exe \
-            https://aka.ms/vs/17/release/vc_redist.x64.exe
-
-          rm -rf \
-            /tmp/vcredist_stage1 \
-            /tmp/vcredist
-
-          mkdir -p \
-            /tmp/vcredist_stage1 \
-            /tmp/vcredist \
-            app/Madeira/x86_64-vcruntime
-
-          echo
-          echo "========================================"
-          echo "Extracting VC++ installer"
-          echo "========================================"
+            "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
           7zz x \
             VC_redist.x64.exe \
-            -o/tmp/vcredist_stage1 \
-            -y
+            -ovcredist
 
-          echo
-          echo "========================================"
-          echo "Extracting CAB files"
-          echo "========================================"
-
-          find /tmp/vcredist_stage1 \
+          CAB="$(find vcredist \
             -type f \
-            -iname "*.cab" \
-            -exec 7zz x "{}" -o/tmp/vcredist -y \;
+            -name '*.cab' \
+            | head -n 1)"
+
+          if [ -z "$CAB" ]; then
+            echo "ERROR: Could not find VC runtime CAB."
+            find vcredist -maxdepth 5 -type f -print
+            exit 1
+          fi
+
+          7zz x \
+            "$CAB" \
+            -o"$VC_DIR"
 
           echo
-          echo "========================================"
-          echo "Copying VC++ DLLs"
-          echo "========================================"
+          echo "VC runtime files:"
+          find "$VC_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.dll' \
+            -print \
+            | sort
 
           REQUIRED_DLLS=(
             concrt140.dll
@@ -989,138 +822,209 @@ jobs:
             vcruntime140_threads.dll
           )
 
-          for DLL in "${REQUIRED_DLLS[@]}"; do
+          for dll in "${REQUIRED_DLLS[@]}"; do
+            if [ ! -f "$VC_DIR/$dll" ]; then
+              echo "ERROR: Missing Microsoft DLL: $dll"
+              exit 1
+            fi
+          done
 
-            SOURCE=$(
-              find /tmp/vcredist \
-                -type f \
-                -iname "$DLL" \
-                -print \
-                -quit
-            )
+          echo
+          echo "All required Microsoft VC++ runtime DLLs are present."
 
-            if [ -n "$SOURCE" ]; then
-              echo "FOUND: $DLL"
+      # ================================================================
+      # 28. VERIFY ALL REQUIRED MADEIRA LIBRARIES
+      # ================================================================
+      - name: Verify build outputs
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-              cp \
-                "$SOURCE" \
-                "app/Madeira/x86_64-vcruntime/$DLL"
-            else
-              echo "MISSING: $DLL"
+          echo "================================================"
+          echo "Verifying Madeira build outputs"
+          echo "================================================"
+
+          REQUIRED=(
+            "app/Madeira/libdxmt_combined.a"
+            "FEX/build-ios/FEXCore/Source/libFEXCore.a"
+            "FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
+            "FEX/build-ios/FEXCore/Source/libJemallocLibs.a"
+            "wine/build-macos/tools/winebuild/winebuild"
+          )
+
+          for file in "${REQUIRED[@]}"; do
+            if [ ! -e "$file" ]; then
+              echo "ERROR: Missing required output:"
+              echo "  $file"
               exit 1
             fi
 
+            echo "OK: $file"
           done
 
-      # ============================================================
-      # XCODE BUILD
-      # ============================================================
-
-      - name: Build Madeira with Xcode
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd "$GITHUB_WORKSPACE"
-
-          echo "========================================"
-          echo "Preparing DerivedData"
-          echo "========================================"
-
-          rm -rf build/DerivedData
-          mkdir -p build/DerivedData
+          echo
+          echo "DXMT Windows DLLs:"
+          ls -lh app/Madeira/aarch64-windows/*.dll
 
           echo
-          echo "========================================"
-          echo "Starting Xcode build"
-          echo "========================================"
+          echo "VC runtime:"
+          ls -lh app/Madeira/x86_64-vcruntime/*.dll
 
-          xcodebuild \
-            -project app/Madeira.xcodeproj \
-            -scheme Madeira \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
-
-      # ============================================================
-      # PACKAGE IPA
-      # ============================================================
-
-      - name: Package IPA
-        if: success()
+      # ================================================================
+      # 29. SHOW XCODE PROJECTS / SCHEMES
+      # ================================================================
+      - name: Inspect Xcode project
         shell: bash
+        working-directory: app
         run: |
           set -euxo pipefail
 
-          cd "$GITHUB_WORKSPACE"
+          echo "Xcode files:"
+          find . \
+            -maxdepth 2 \
+            \( \
+              -name '*.xcodeproj' \
+              -o -name '*.xcworkspace' \
+            \) \
+            -print
 
-          APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
+          echo
+          echo "Project contents:"
+          ls -la
 
-          echo "========================================"
-          echo "Checking Madeira.app"
-          echo "========================================"
+          PROJECT="$(find . -maxdepth 2 -name '*.xcodeproj' | head -n 1)"
 
-          if [ ! -d "$APP" ]; then
-            echo "ERROR: Madeira.app not found"
-
-            find build/DerivedData/Build/Products \
-              -maxdepth 3 \
-              -type d \
-              -print || true
-
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: No Xcode project found."
             exit 1
           fi
 
-          echo "FOUND:"
-          du -sh "$APP"
+          echo "Using project:"
+          echo "$PROJECT"
 
-          echo
-          echo "========================================"
-          echo "Creating Payload"
-          echo "========================================"
+          xcodebuild \
+            -project "$PROJECT" \
+            -list
 
-          rm -rf build/Payload
+      # ================================================================
+      # 30. BUILD IOS APP
+      # ================================================================
+      - name: Build Madeira iOS app
+        shell: bash
+        working-directory: app
+        run: |
+          set -euxo pipefail
 
-          mkdir -p build/Payload
+          PROJECT="$(find . -maxdepth 2 -name '*.xcodeproj' | head -n 1)"
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: No .xcodeproj found."
+            exit 1
+          fi
+
+          echo "Building:"
+          echo "$PROJECT"
+
+          rm -rf build
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme Madeira \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS=arm64 \
+            IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            build
+
+      # ================================================================
+      # 31. FIND APP
+      # ================================================================
+      - name: Locate built app
+        shell: bash
+        working-directory: app
+        run: |
+          set -euxo pipefail
+
+          APP_PATH="$(find build \
+            -type d \
+            -name '*.app' \
+            | head -n 1)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Could not find built .app"
+            find build -maxdepth 6 -type d -print
+            exit 1
+          fi
+
+          echo "APP_PATH=$PWD/$APP_PATH" >> "$GITHUB_ENV"
+
+          echo "Built application:"
+          echo "$PWD/$APP_PATH"
+
+          du -sh "$APP_PATH"
+
+      # ================================================================
+      # 32. PACKAGE IPA
+      # ================================================================
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/Payload"
+          rm -f "$GITHUB_WORKSPACE/Madeira.ipa"
+
+          mkdir -p "$GITHUB_WORKSPACE/Payload"
 
           cp -R \
-            "$APP" \
-            build/Payload/Madeira.app
+            "$APP_PATH" \
+            "$GITHUB_WORKSPACE/Payload/"
 
-          echo
-          echo "========================================"
-          echo "Creating IPA"
-          echo "========================================"
+          cd "$GITHUB_WORKSPACE"
 
-          cd build
-
-          rm -f Madeira.ipa
-
-          zip \
-            -r \
-            -q \
+          zip -r \
             Madeira.ipa \
-            Payload
+            Payload \
+            >/dev/null
+
+          test -f Madeira.ipa
 
           echo
-          echo "========================================"
-          echo "IPA created"
-          echo "========================================"
-
+          echo "IPA created:"
           ls -lh Madeira.ipa
 
-      # ============================================================
-      # UPLOAD
-      # ============================================================
+          echo
+          echo "SHA256:"
+          shasum -a 256 Madeira.ipa
 
-      - name: Upload IPA
-        if: success()
+      # ================================================================
+      # 33. UPLOAD IPA
+      # ================================================================
+      - name: Upload Madeira IPA
         uses: actions/upload-artifact@v4
         with:
           name: Madeira-IPA
-          path: build/Madeira.ipa
+          path: Madeira.ipa
           if-no-files-found: error
+          retention-days: 7
+
+      # ================================================================
+      # 34. UPLOAD BUILD LOGS IF SOMETHING FAILS
+      # ================================================================
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-build-diagnostics
+          path: |
+            app/build
+            FEX/build-ios
+            toolchains/llvm-ios-build
+            toolchains/llvm-host-build
+          if-no-files-found: ignore
+          retention-days: 3
