@@ -1,0 +1,180 @@
+name: Build Madeira IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Madeira
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Show Xcode
+        shell: bash
+        run: |
+          set -e
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -e
+          brew install cmake ninja bison flex pkg-config sevenzip llvm
+          
+          echo 'export PATH="/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:$PATH"' >> $GITHUB_ENV
+          echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib -L/opt/homebrew/opt/llvm/lib"' >> $GITHUB_ENV
+          echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include -I/opt/homebrew/opt/llvm/include"' >> $GITHUB_ENV
+          echo 'export LLVM_CONFIG="/opt/homebrew/opt/llvm/bin/llvm-config"' >> $GITHUB_ENV
+
+      - name: Install Wine manually
+        shell: bash
+        run: |
+          set -e
+          sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+
+          curl -L --fail --retry 3 -O https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-devel-11.16-osx64.tar.xz
+          tar -xf wine-devel-11.16-osx64.tar.xz
+          xattr -rc "Wine Devel.app" || true
+          
+          WINE_BIN="$(pwd)/Wine Devel.app/Contents/Resources/wine/bin"
+          echo "export PATH=\"$WINE_BIN:\$PATH\"" >> $GITHUB_ENV
+          
+          mkdir -p /opt/homebrew/bin
+          ln -sf "$WINE_BIN/wine" /opt/homebrew/bin/wine
+          ln -sf "$WINE_BIN/wine64" /opt/homebrew/bin/wine64
+          ln -sf "$WINE_BIN/wineboot" /opt/homebrew/bin/wineboot
+
+      - name: Fetch LLVM MinGW toolchain
+        shell: bash
+        run: |
+          set -e
+          mkdir -p toolchains
+          cd toolchains
+          curl -L --fail --retry 3 -O https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+
+      - name: Build native dependencies
+        shell: bash
+        env:
+          WINEDLLOVERRIDES: "mscoree,mshtml="
+          WINEDEBUG: "-all"
+          WINE: "/opt/homebrew/bin/wine"
+        run: |
+          set -e
+          wineboot --init || true
+          
+          unset CPPFLAGS
+          unset LDFLAGS
+          
+          BUILD_ORDER=("wine" "fex" "dxmt" "dxmt-ios")
+          
+          for component in "${BUILD_ORDER[@]}"; do
+            script="build/$component/build.sh"
+            if [ -f "$script" ]; then
+              if ! bash -x "$script"; then
+                echo "::error::Build failed in $component"
+                find "build/$component" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Check required Madeira files
+        shell: bash
+        run: |
+          MISSING_FILES=0
+          for f in \
+            app/libdxmt_unix.a \
+            app/Madeira/libwineserver.a \
+            app/Madeira/libntdll_unix.a \
+            app/Madeira/libwin32u_unix.a \
+            app/Madeira/libgnutls.a \
+            app/Madeira/libhogweed.a \
+            app/Madeira/libnettle.a \
+            app/Madeira/libgmp.a \
+            FEX/build-ios/FEXCore/Source/libFEXCore.a \
+            FEX/build-ios/FEXCore/Source/libFEXCore_Base.a \
+            FEX/build-ios/FEXCore/Source/libJemallocLibs.a
+          do
+            if [ ! -e "$f" ]; then
+              echo "MISSING: $f"
+              MISSING_FILES=1
+            fi
+          done
+          
+          if [ $MISSING_FILES -eq 1 ]; then
+            exit 1
+          fi
+
+      - name: Prepare Microsoft VC++ Runtime
+        shell: bash
+        run: |
+          set -e
+          curl -L --fail --retry 3 -o VC_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+          rm -rf /tmp/vcredist_stage1 /tmp/vcredist
+          mkdir -p /tmp/vcredist_stage1 /tmp/vcredist app/Madeira/x86_64-vcruntime
+
+          7zz x VC_redist.x64.exe -o/tmp/vcredist_stage1 -y
+          find /tmp/vcredist_stage1 -type f -name "*.cab" -exec 7zz x "{}" -o/tmp/vcredist -y \;
+
+          required=(
+            concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll
+            msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vcamp140.dll
+            vccorlib140.dll vcomp140.dll vcruntime140.dll vcruntime140_1.dll
+            vcruntime140_threads.dll
+          )
+
+          for dll in "${required[@]}"; do
+            source_file=$(find /tmp/vcredist -type f -iname "*$dll*" -print -quit)
+            if [ -n "$source_file" ]; then
+              cp "$source_file" "app/Madeira/x86_64-vcruntime/$dll"
+            else
+              exit 1
+            fi
+          done
+
+      - name: Try Xcode build
+        shell: bash
+        run: |
+          set -e
+          mkdir -p build/DerivedData
+          xcodebuild \
+            -project app/Madeira.xcodeproj \
+            -scheme Madeira \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package IPA
+        if: success()
+        shell: bash
+        run: |
+          set -e
+          APP="build/DerivedData/Build/Products/Release-iphoneos/Madeira.app"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/Madeira.app
+          cd build
+          rm -f Madeira.ipa
+          zip -r -q Madeira.ipa Payload
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-IPA
+          path: build/Madeira.ipa
+          if-no-files-found: error
