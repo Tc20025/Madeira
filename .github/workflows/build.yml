@@ -75,27 +75,7 @@ jobs:
           
           wineboot --init || true
           
-          echo "=== Locating and Compiling Metal Shaders ==="
-          mkdir -p build/dxmt-ios/shader-headers
-          
-          # Dynamically locate the msad.metal file instead of guessing the path
-          MSAD_METAL=$(find research/dxmt -name "msad.metal" | head -n 1)
-          
-          if [ -n "$MSAD_METAL" ]; then
-            echo "Found msad.metal at $MSAD_METAL"
-            xcrun -sdk iphoneos metal -c "$MSAD_METAL" -o build/dxmt-ios/msad.air
-            xcrun -sdk iphoneos metallib build/dxmt-ios/msad.air -o build/dxmt-ios/air_msad.metallib
-            
-            # Switch directories so xxd assigns the correct variable name to the C array
-            cd build/dxmt-ios
-            xxd -i air_msad.metallib > shader-headers/air_msad.h
-            cd ../..
-          else
-            echo "::error::msad.metal not found! The submodule might be missing or incomplete."
-            exit 1
-          fi
-          
-          BUILD_ORDER=("wine" "fex" "dxmt" "dxmt-ios")
+          BUILD_ORDER=("wine" "fex" "dxmt")
           
           for component in "${BUILD_ORDER[@]}"; do
             script="build/$component/build.sh"
@@ -107,6 +87,27 @@ jobs:
               fi
             fi
           done
+
+          echo "=== Populating missing shader headers for dxmt-ios ==="
+          mkdir -p build/dxmt-ios/shader-headers
+          
+          # The 'dxmt' build step above successfully generated air_msad.h 
+          # Find all generated air_ headers and copy them to where dxmt-ios expects them
+          find build/dxmt research/dxmt -name "air_*.h" -exec cp {} build/dxmt-ios/shader-headers/ \;
+          
+          if [ ! -f "build/dxmt-ios/shader-headers/air_msad.h" ]; then
+            echo "::error::air_msad.h was not found in the dxmt build output!"
+            exit 1
+          else
+            echo "Successfully recovered air_msad.h"
+          fi
+          
+          # Now run the dxmt-ios build
+          if ! bash -x "build/dxmt-ios/build.sh"; then
+             echo "::error::Build failed in dxmt-ios"
+             find "build/dxmt-ios" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
+             exit 1
+          fi
 
       - name: Check required Madeira files
         shell: bash
