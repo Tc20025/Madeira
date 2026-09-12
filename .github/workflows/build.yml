@@ -90,25 +90,37 @@ jobs:
 
           echo "=== Populating missing shader headers for dxmt-ios ==="
           mkdir -p build/dxmt-ios/shader-headers
+          mkdir -p build/dxmt # Prevent the 'find' command from crashing if this is missing
           
-          # The 'dxmt' build step above successfully generated air_msad.h 
-          # Find all generated air_ headers and copy them to where dxmt-ios expects them
-          find build/dxmt research/dxmt -name "air_*.h" -exec cp {} build/dxmt-ios/shader-headers/ \;
+          # Search for existing headers and suppress errors if nothing is found
+          find build/dxmt research/dxmt -name "air_*.h" -exec cp {} build/dxmt-ios/shader-headers/ \; || true
           
+          # If the header is STILL missing, forcibly compile it from the source metal file
           if [ ! -f "build/dxmt-ios/shader-headers/air_msad.h" ]; then
-            echo "::error::air_msad.h was not found in the dxmt build output!"
-            exit 1
-          else
-            echo "Successfully recovered air_msad.h"
+            echo "air_msad.h not found in search. Generating manually..."
+            MSAD_METAL=$(find research/dxmt -name "msad.metal" | head -n 1)
+            
+            if [ -n "$MSAD_METAL" ]; then
+              xcrun -sdk iphoneos metal -c "$MSAD_METAL" -o build/dxmt-ios/msad.air
+              xcrun -sdk iphoneos metallib build/dxmt-ios/msad.air -o build/dxmt-ios/air_msad.metallib
+              cd build/dxmt-ios
+              xxd -i air_msad.metallib > shader-headers/air_msad.h
+              cd ../..
+            else
+              echo "::error::Could not find msad.metal anywhere to manually generate the header."
+              exit 1
+            fi
           fi
           
-          # Now run the dxmt-ios build
+          echo "Successfully recovered air_msad.h"
+          
+          # Run the dxmt-ios build now that the headers are guaranteed to be present
           if ! bash -x "build/dxmt-ios/build.sh"; then
              echo "::error::Build failed in dxmt-ios"
              find "build/dxmt-ios" -name "*.err" -type f -exec echo -e "\n>>> {} <<<" \; -exec cat {} \;
              exit 1
           fi
-
+          
       - name: Check required Madeira files
         shell: bash
         run: |
