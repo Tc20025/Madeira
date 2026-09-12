@@ -21,7 +21,9 @@ jobs:
           set -e
           brew install cmake ninja bison flex pkg-config sevenzip llvm@15
           
-          # Inject LLVM paths globally so every subsequent step inherits them automatically
+          # Force link LLVM 15 to suppress Homebrew warnings and guarantee toolchain priority
+          brew link --force llvm@15
+          
           echo 'export PATH="/opt/homebrew/opt/llvm@15/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"' >> $GITHUB_ENV
           echo 'export LDFLAGS="-L/opt/homebrew/opt/bison/lib -L/opt/homebrew/opt/flex/lib -L/opt/homebrew/opt/llvm@15/lib"' >> $GITHUB_ENV
           echo 'export CPPFLAGS="-I/opt/homebrew/opt/bison/include -I/opt/homebrew/opt/flex/include -I/opt/homebrew/opt/llvm@15/include -Wno-deprecated-declarations"' >> $GITHUB_ENV
@@ -61,6 +63,14 @@ jobs:
           tar -xf llvm-mingw-20260421-ucrt-macos-universal.tar.xz
           rm llvm-mingw-20260421-ucrt-macos-universal.tar.xz
 
+      - name: Fetch missing source dependencies (FreeType)
+        shell: bash
+        run: |
+          set -e
+          echo "=== Cloning FreeType ==="
+          mkdir -p research
+          git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git research/freetype
+
       - name: Generate Metal Shaders (Pre-Build)
         shell: bash
         run: |
@@ -86,7 +96,6 @@ jobs:
           set -e
           wineboot --init || true
           
-          # Strictly define ONLY the folders required for the IPA, omitting broken tests
           REQUIRED_COMPONENTS=(
             "gmp"
             "nettle"
